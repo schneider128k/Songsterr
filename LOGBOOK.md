@@ -35,19 +35,36 @@ Converted the Colab notebook into a proper desktop Python project:
 
 ---
 
-## Current milestone — Milestone 3 
+## Milestone 3 — Windows end-to-end verification (completed)
 
-**Goal**: Verify the desktop project works end-to-end on the local machine.
+Verified the full pipeline works on Windows:
 
-Tasks for the next session:
-1. User runs `pip install requests` and `python main.py <CDN_URL>` on a known-good
-   song (e.g. Gouge Away: songId=15960, partId=5)
-2. Confirm PDF is produced in `scores/` without errors
-3. If bar check warnings appear in LilyPond output, investigate and fix in `emitter.py`
-4. If LilyPond is not found, debug `lilypond_utils.py` for the user's platform
-5. Once clean, update this logbook and push
+- LilyPond 2.24.4 installed from zip, placed at `C:\LilyPond\lilypond-2.24.4\`
+- `LILYPOND_BIN` user environment variable set to
+  `C:\LilyPond\lilypond-2.24.4\bin\lilypond.exe`
+- `lilypond_utils.py` auto-detects the binary correctly via the env var
+- Python virtual environment set up with `.venv`, `requests` installed
+- Full pipeline tested on Wave of Mutilation (Pixies, songId=16093, partId=3):
+  fetch → parse → cache → LilyPond compile → PDF produced in `scores/`
+- No errors, no bar check warnings
 
-**Known issues to address eventually** (not blocking milestone 3):
-- Ties not drawn (tie arc missing in output)
+---
+
+## Current milestone — Milestone 4 (next session picks up here)
+
+**Goal**: Test more songs and implement ties.
+
+Suggested tasks:
+1. Test the remaining known-good songs (Slowly We Rot, Pneuma, Earth unknown)
+   and confirm clean PDF output for each
+2. Implement tie arcs: `note["tie"] = true` is already parsed and stored in the
+   IR as `Event` — the emitter needs to detect consecutive tied notes and emit
+   `~` between them in LilyPond
+3. Investigate the `anacrusis` field in v5 songs and whether it affects
+   bar numbering
+4. Once any fixes are confirmed working, update this logbook and push
+
+**Known issues** (carry-over from earlier milestones):
+- Ties not drawn (tie arc missing in PDF output)
 - `anacrusis` field in v5 songs ignored (may affect bar numbering)
 - Dynamics (`velocity`) not emitted
