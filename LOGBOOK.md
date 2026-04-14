@@ -44,27 +44,64 @@ Verified the full pipeline works on Windows:
   `C:\LilyPond\lilypond-2.24.4\bin\lilypond.exe`
 - `lilypond_utils.py` auto-detects the binary correctly via the env var
 - Python virtual environment set up with `.venv`, `requests` installed
-- Full pipeline tested on Wave of Mutilation (Pixies, songId=16093, partId=3):
-  fetch → parse → cache → LilyPond compile → PDF produced in `scores/`
+- Full pipeline tested on Wave of Mutilation (Pixies, songId=16093, partId=3)
+  and Into the Fire (Dokken, songId=5829): fetch → parse → cache →
+  LilyPond compile → PDF produced in `scores/`
 - No errors, no bar check warnings
 
 ---
 
 ## Current milestone — Milestone 4 (next session picks up here)
 
-**Goal**: Test more songs and implement ties.
+**Goal**: Systematic testing and parser/emitter fixes.
 
-Suggested tasks:
-1. Test the remaining known-good songs (Slowly We Rot, Pneuma, Earth unknown)
-   and confirm clean PDF output for each
-2. Implement tie arcs: `note["tie"] = true` is already parsed and stored in the
-   IR as `Event` — the emitter needs to detect consecutive tied notes and emit
-   `~` between them in LilyPond
-3. Investigate the `anacrusis` field in v5 songs and whether it affects
-   bar numbering
-4. Once any fixes are confirmed working, update this logbook and push
+The PDF output should match the Songsterr score as closely as possible before
+any editor GUI is built. A buggy data foundation would make the editor painful
+to use.
 
-**Known issues** (carry-over from earlier milestones):
-- Ties not drawn (tie arc missing in PDF output)
-- `anacrusis` field in v5 songs ignored (may affect bar numbering)
-- Dynamics (`velocity`) not emitted
+Tasks:
+1. Test all known songs and carefully compare PDF output against the Songsterr
+   score in the browser, documenting every mismatch
+2. Known songs to test:
+   - Gouge Away — Pixies (songId=15960, partId=5) — simple 4/4, v8
+   - Wave of Mutilation — Pixies (songId=16093, partId=3) — v5, time sig changes
+   - Slowly We Rot — Obituary (songId=49310, partId=4) — v8, blast beats, multi-tempo
+   - Pneuma — Tool (songId=455388, partId=8) — v8, complex time sigs, tuplets
+   - Into the Fire — Dokken (songId=5829) — already tested on desktop
+3. Document mismatches: wrong drum instrument, wrong rhythm, missing notes,
+   bar check warnings, anything that looks off in the PDF
+4. Fix bugs found in `parser.py` and/or `emitter.py`
+5. Known issues to investigate during this milestone:
+   - Ties: `note["tie"] = true` present in JSON but not emitted (no tie arc drawn)
+   - `anacrusis` field in v5 songs currently ignored (may affect bar numbering)
+   - Any wrong GM drum mappings for the user's kit:
+     Crash, Ride, Hi-Hat (closed/open/pedal), Snare, Side Stick,
+     High Tom, Mid Tom, Floor Tom, Bass Drum
+6. Once all fixes confirmed working, update logbook and push
+
+---
+
+## Planned milestones (future)
+
+**Milestone 5 — CDN URL automation**
+- Given a Songsterr page URL, automatically find the CDN URL for the drum track
+- `python main.py https://www.songsterr.com/a/wsa/...` just works
+- No more manual DevTools fishing
+
+**Milestone 6 — Browser-based grid editor**
+- `python editor.py` starts a local server and opens the browser automatically
+- Grid view: rows = drum instruments, columns = 1/16 beats, continuous scroll
+- Drum rows: Crash, Ride, Hi-Hat, Open Hi-Hat, Hi-Hat Pedal, Snare, Side Stick,
+  High Tom, Mid Tom, Floor Tom, Bass Drum
+- Left click = toggle hit, Shift+click = cycle accent (normal → accent → ghost)
+- Right-click measure header = edit section marker text
+- Toolbar: load cached score, new blank score, add/delete measure,
+  change time signature, Compile → PDF, Save
+- No new pip dependencies (stdlib `http.server` + `webbrowser` only)
+- Supports both workflows: correct an existing Songsterr score, or
+  compose a new score from scratch
+
+**Milestone 7 — Notation polish**
+- Tie arcs emitted to LilyPond
+- Dynamics (`velocity`) emitted
+- Any remaining notation improvements found during editor use
