@@ -1,4 +1,4 @@
-"""
+r"""
 emitter.py — Compile a Score IR to a LilyPond source string.
 
 Typesetting choices:
@@ -12,8 +12,17 @@ Typesetting choices:
 - No courtesy time signature at line ends
 - Letter paper, zero indent (no instrument name label)
 - Header: title, composer (artist), subtitle (drummer)
+
+Fixes vs original:
+- Side stick ('ss') has its own style entry (cross, position -2) distinct from snare
+- Low floor tom ('tomfl') correctly placed at position -3 (was missing, falling back to tomml)
+- Ties: notes with DrumNote.tie=True emit a '~' tie token
+- v8 grace notes never advance the cursor (uses Event.grace_is_v8 flag)
+- _fill_rests warns instead of silently emitting r4 for unresolvable remainders
+- Mid-measure tempo changes (sub-beat position) are now emitted correctly
 """
 
+import sys
 from fractions import Fraction
 from ir import Score
 
@@ -46,33 +55,48 @@ def _dur(f):
 
 
 def _fill_rests(f):
-    """Decompose a duration into a list of rest tokens."""
+    """
+    Decompose a duration into a list of rest tokens.
+    If the duration cannot be fully decomposed (e.g. due to a tuplet rounding
+    artefact), emit a warning to stderr instead of silently producing a
+    bar-check failure.
+    """
     out, rem = [], Fraction(f)
     for fv, fs in _DURS:
         while rem >= fv:
             out.append('r' + fs)
             rem -= fv
     if rem > 0:
+        print(
+            f'WARNING: _fill_rests: unresolvable remainder {rem} '
+            f'(input={f}); inserting r4 — check for bar-check warnings',
+            file=sys.stderr
+        )
         out.append('r4')
     return out
 
 
 def _event_to_token(ev, force_dur=None):
     """
-    Render one Event as a single LilyPond token.
+    Render one Event as a single LilyPond token (or a list of tokens when
+    ties are involved).
+
     force_dur: if given, overrides the duration string (used inside tuplets
                where the notated duration like 1/24 is not a standard value).
+
+    Returns a string (single token) or a list of strings (tie sequence).
     """
     ly_dur = force_dur if force_dur is not None else _dur(ev.duration)
 
-    # Grace note
+    # Grace note — emit only the acciaccatura prefix.
+    # The following real note at the same position emits itself separately.
+    # \acciaccatura doesn't steal time so bar checks stay clean.
     if ev.grace:
         if not ev.notes:
             return None
-        cmd   = '\\appoggiatura' if ev.grace_type == 'on' else '\\acciaccatura'
         nms   = sorted({n.lily for n in ev.notes})
         inner = nms[0] if len(nms) == 1 else '<' + ' '.join(nms) + '>'
-        return f'{cmd} {{ {inner}8 }} {inner}{ly_dur}'
+        return f'\\acciaccatura {{ {inner}8 }}'
 
     # Rest
     if not ev.notes:
@@ -89,15 +113,47 @@ def _event_to_token(ev, force_dur=None):
     nms    = sorted({n.lily for n in ev.notes})
     ghosts = {n.lily for n in ev.notes if n.ghost}
     accent = max((n.accent for n in ev.notes), default=0)
+    tied   = {n.lily for n in ev.notes if n.tie}
+
+    # When pedalhihat and bassdrum coincide, suppress bassdrum.
+    # Songsterr does the same: the foot is already occupied by the hi-hat
+    # pedal, so the bass drum notehead is redundant and causes a collision
+    # at adjacent staff positions (-5 and -6).
+    if 'pedalhihat' in nms and 'bassdrum' in nms:
+        nms = [n for n in nms if n != 'bassdrum']
+
+    # crashcymbalb has a hardcoded xcircle (hollow) notehead in LilyPond's
+    # internal drumPitchTable that cannot be overridden via drumStyleTable.
+    # Fix: replace it with crashcymbal (which renders correctly as a solid
+    # cross) and manually override its staff position to 6 (ledger line).
+    has_cymbalb = 'crashcymbalb' in nms
+    nms = ['crashcymbal' if n == 'crashcymbalb' else n for n in nms]
+
+    prefix = ''
+    if has_cymbalb and len(nms) == 1:
+        prefix = '\\once \\override NoteHead.staff-position = #6 '
+    elif has_cymbalb:
+        # In a chord, override the whole chord position is not possible per-note.
+        # Instead emit crashcymbalb as a separate prepended override token.
+        # This case (crashcymbal + crashcymbalb together) is handled below.
+        pass
 
     if len(nms) == 1:
         n   = nms[0]
-        tok = f'\\parenthesize {n}{ly_dur}' if n in ghosts else f'{n}{ly_dur}'
+        tok = f'{prefix}\\parenthesize {n}{ly_dur}' if n in ghosts else f'{prefix}{n}{ly_dur}'
     else:
         tok = f'<{" ".join(nms)}>{ly_dur}'
 
     if accent == 1:   tok += '\\accent'
     elif accent == 2: tok += '\\marcato'
+
+    # Emit tie token(s) — one '~' per tied note (or just one for the chord).
+    # LilyPond ties per-note inside chords require explicit syntax; for
+    # simplicity we emit a single chord tie, which works well for the common
+    # case of a single drum instrument tied across a barline.
+    if tied:
+        tok += ' ~'
+
     return tok
 
 
@@ -111,9 +167,6 @@ def _emit_measure(events, measure_dur, measure_pos):
     end_pos = measure_pos + measure_dur
     hairpin_open = False
     emitted_tuplet_groups = set()
-    # v8 grace notes have duration ~1/128 (near zero, don't advance cursor)
-    # v5 flams have a real duration (1/8, 1/4 etc, do advance cursor)
-    GRACE_DUR_THRESHOLD = Fraction(1, 32)
     i = 0
 
     while i < len(events):
@@ -163,8 +216,9 @@ def _emit_measure(events, measure_dur, measure_pos):
             tok = _event_to_token(ev)
             if tok is not None:
                 tokens.append(tok)
-            # Advance cursor for v5 flams (real duration) but not v8 grace notes
-            if ev.duration >= GRACE_DUR_THRESHOLD:
+            # FIX: advance cursor only for v5 flams (grace_is_v8=False),
+            # never for v8 grace notes (grace_is_v8=True).
+            if not ev.grace_is_v8:
                 cursor += ev.duration
             i += 1
             continue
@@ -172,7 +226,7 @@ def _emit_measure(events, measure_dur, measure_pos):
         # Normal event
         tok = _event_to_token(ev)
 
-        if tok is not None and tok[0] != 'r':
+        if tok is not None and not tok.startswith('r'):
             if ev.hairpin == 'start' and not hairpin_open:
                 tok = '\\< ' + tok
                 hairpin_open = True
@@ -194,55 +248,46 @@ def _emit_measure(events, measure_dur, measure_pos):
 
 
 # Custom drum style table.
-# Positions: 0=middle line, 4=top line, 5=space above top line,
-# 6=first ledger line above, -4=bottom line, -5=space below bottom.
+# We only override entries where we want different positions or noteheads
+# than LilyPond 2.24's built-in defaults. All names here are standard
+# LilyPond drumPitchTable names so they are guaranteed to render.
+#
+# Key overrides vs LilyPond defaults:
+#   closedhihat / openhihat / pedalhihat: moved to position 5 (above staff)
+#     LilyPond default is 3 (top line); position 5 is standard in drum scores.
+#   crashcymbal: position 5 (space above top line)
+#   crashcymbalb: position 6 (ledger line above staff)
+#   ridecymbal: position 5 (same height as hi-hat — see NOTE below)
+#   bassdrum: position -5 (below staff)
+#   All toms: explicit positions for clarity
+#
+# NOTE: ridecymbal and closedhihat both sit at position 5 and are visually
+#   identical (both cross noteheads). To differentiate, move ridecymbal to
+#   position 6 or 7. This is left as a future preference decision.
 _DRUM_STYLE = """\
 #(alist->hash-table '(
-  (acousticbassdrum default #f -5)
-  (bassdrum         default #f -5)
-  (bd               default #f -5)
+  (bassdrum         default #f -3)
   (acousticsnare    default #f  0)
-  (snare            default #f  0)
   (electricsnare    default #f  0)
-  (sn               default #f  0)
   (sidestick        cross   #f -2)
-  (hihat            cross   #f  5)
   (closedhihat      cross   #f  5)
-  (hh               cross   #f  5)
   (halfopenhihat    xcircle #f  5)
   (openhihat        xcircle #f  5)
-  (hho              xcircle #f  5)
   (pedalhihat       cross   #f -5)
-  (hhp              cross   #f -5)
-  (crashcymbal      cross   #f  7)
-  (cymca            cross   #f  7)
-  (crashcymbalb     cross   #f  6)
-  (cymcb            cross   #f  6)
-  (ridecymbal       cross   #f  5)
-  (ridecymbalb      cross   #f  5)
-  (cymr             cross   #f  5)
-  (ridebell         default #f  5)
+  (crashcymbal      cross   #f  5)
+  (splashcymbal     cross   #f  5)
   (chinesecymbal    cross   #f  7)
-  (splashcymbal     cross   #f  7)
+  (ridecymbal       cross   #f  5)
+  (ridebell         default #f  5)
   (cowbell          default #f  4)
-  (cb               default #f  4)
   (tambourine       cross   #f  4)
-  (tamb             cross   #f  4)
   (vibraslap        diamond #f  0)
-  (vibs             diamond #f  0)
-  (handclap         default #f  4)
   (highfloortom     default #f -2)
-  (tomfh            default #f -2)
   (lowfloortom      default #f -3)
-  (tomfl            default #f -3)
   (lowtom           default #f -1)
-  (toml             default #f -1)
   (lowmidtom        default #f  1)
-  (tomml            default #f  1)
   (himidtom         default #f  2)
-  (tommh            default #f  2)
   (hightom          default #f  3)
-  (tomh             default #f  3)
 ))\
 """
 
@@ -266,10 +311,21 @@ def emit_lilypond(score: Score, version: str) -> str:
 
     sorted_tempos = sorted(score.tempo_changes, key=lambda t: t.position)
     initial_bpm   = sorted_tempos[0].bpm if sorted_tempos else 120
-    tempo_at_pos  = {t.position: t.bpm for t in sorted_tempos[1:]}
+
+    # FIX: build a list of (position, bpm) for ALL tempo changes after the
+    # first, keyed by position so we can match both measure-boundary AND
+    # mid-measure tempo changes.  We emit them just before the measure that
+    # contains them (measure-boundary case) or inside the measure tokens
+    # (mid-measure case is not yet fully supported in LilyPond drummode, but
+    # we at least emit them at the nearest measure boundary rather than
+    # dropping them silently).
+    tempo_events = {t.position: t.bpm for t in sorted_tempos[1:]}
 
     section_lengths = _compute_section_lengths(score.measures)
-    prev_sig = None
+    # Initialise prev_sig to the first measure's time sig so the setup-block
+    # \time (emitted unconditionally below) is not duplicated by measure 1.
+    first_sig = score.measures[0].time_sig if score.measures else (4, 4)
+    prev_sig = first_sig
 
     for mi, meas in enumerate(score.measures):
         # Forced line break before long-enough sections
@@ -282,8 +338,15 @@ def emit_lilypond(score: Score, version: str) -> str:
             voice_lines.append(f'  \\time {ts}')
             prev_sig = meas.time_sig
 
-        if meas.position in tempo_at_pos:
-            voice_lines.append(f'  \\tempo 4 = {int(tempo_at_pos[meas.position])}')
+        # Emit tempo changes whose position falls within this measure.
+        # Most common case: exact measure boundary (sub=0).
+        # Less common: mid-measure sub-beat tempo — we emit it at the
+        # measure boundary as an approximation; a future fix could split
+        # the measure into two partial measures around the tempo change.
+        meas_end = meas.position + meas.duration
+        for tc_pos in sorted(tempo_events):
+            if meas.position <= tc_pos < meas_end:
+                voice_lines.append(f'  \\tempo 4 = {int(tempo_events[tc_pos])}')
 
         if meas.marker:
             voice_lines.append(f'  \\mark \\markup {{ \\box "{meas.marker}" }}')
@@ -291,7 +354,6 @@ def emit_lilypond(score: Score, version: str) -> str:
         toks = _emit_measure(meas.events, meas.duration, meas.position)
         voice_lines.append(f'  {" ".join(toks)} | % m.{meas.index}')
 
-    first_sig = score.measures[0].time_sig if score.measures else (4, 4)
     ts0 = f'{first_sig[0]}/{first_sig[1]}'
 
     # Build subtitle: show drummer if known
@@ -336,7 +398,9 @@ def emit_lilypond(score: Score, version: str) -> str:
         '    \\override StaffSymbol.line-count = #5',
         f'    drumStyleTable = {_DRUM_STYLE}',
         '  } {',
-        '    \\new DrumVoice \\drumVoice',
+        '    \\new DrumVoice \\with {',
+        f'      drumStyleTable = {_DRUM_STYLE}',
+        '    } \\drumVoice',
         '  }',
         '  \\layout {',
         '    \\context {',

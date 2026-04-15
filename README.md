@@ -24,6 +24,8 @@ score.pdf  →  scores/
 pip install requests
 python main.py <CDN_URL>   # fetch, parse, compile to PDF
 python main.py             # list cached scores
+python flush_cache.py      # delete all cached score JSONs
+python apply_update.py update_vN.zip  # apply a versioned update
 ```
 
 ### How to get a CDN URL from Songsterr
@@ -49,6 +51,8 @@ ir.py              Score / Measure / Event / DrumNote / TempoChange dataclasses
 parser.py          parse_json() — handles Songsterr JSON v5 and v8
 cache.py           save_score() / load_score() / list_cached()
 emitter.py         emit_lilypond() — compiles Score IR to LilyPond source
+flush_cache.py     delete all cached score JSONs (run after parser/IR updates)
+apply_update.py    apply a versioned update_vN.zip to the project
 db/                local JSON cache (gitignored)
 scores/            output PDFs and .ly files (gitignored)
 ```
@@ -63,6 +67,19 @@ LilyPond is auto-detected in this order:
 1. `LILYPOND_BIN` environment variable
 2. Platform-specific known paths (macOS app bundle / Homebrew, Linux apt, Windows)
 3. `lilypond` on PATH
+
+## Update workflow
+
+When a new `update_vN.zip` is provided:
+
+```bash
+python apply_update.py update_vN.zip   # backs up old files, applies new ones
+python flush_cache.py                  # only if parser.py or ir.py changed
+python main.py <CDN_URL>               # re-run to verify
+```
+
+`apply_update.py` and `flush_cache.py` are permanent utility scripts —
+they never need to be updated themselves.
 
 ## Songsterr JSON formats
 
@@ -87,23 +104,29 @@ and is ignored here.
 
 ## GM Drum Map (fret → LilyPond name)
 
-| MIDI | LilyPond | Description         |
-|------|----------|---------------------|
-| 35   | bd       | Bass Drum 2         |
-| 36   | bd       | Bass Drum 1         |
-| 37   | sn       | Side Stick          |
-| 38   | sn       | Acoustic Snare      |
-| 40   | sn       | Electric Snare      |
-| 42   | hh       | Closed Hi-Hat       |
-| 44   | hhp      | Pedal Hi-Hat        |
-| 46   | hho      | Open Hi-Hat         |
-| 49   | cymca    | Crash Cymbal 1      |
-| 51   | cymr     | Ride Cymbal 1       |
-| 57   | cymcb    | Crash Cymbal 2      |
-| 97   | cymca    | Crash (alt)         |
-| 98   | hho      | Open Hi-Hat (alt)   |
-
-(Full map including toms and other instruments is in `parser.py`)
+| MIDI | LilyPond name    | Description                       |
+|------|------------------|-----------------------------------|
+| 35   | bassdrum         | Bass Drum 2                       |
+| 36   | bassdrum         | Bass Drum 1                       |
+| 37   | sidestick        | Side Stick                        |
+| 38   | acousticsnare    | Acoustic Snare                    |
+| 40   | electricsnare    | Electric Snare                    |
+| 41   | lowfloortom      | Low Floor Tom                     |
+| 42   | closedhihat      | Closed Hi-Hat                     |
+| 43   | highfloortom     | High Floor Tom                    |
+| 44   | pedalhihat       | Pedal Hi-Hat                      |
+| 45   | lowtom           | Low Tom                           |
+| 46   | openhihat        | Open Hi-Hat                       |
+| 47   | lowmidtom        | Low-Mid Tom                       |
+| 48   | himidtom         | High-Mid Tom                      |
+| 49   | crashcymbal      | Crash Cymbal 1                    |
+| 50   | hightom          | High Tom                          |
+| 51   | ridecymbal       | Ride Cymbal 1                     |
+| 52   | chinesecymbal    | Chinese Cymbal                    |
+| 57   | crashcymbalb     | Crash Cymbal 2                    |
+| 92   | halfopenhihat    | Half Open Hi-Hat (Songsterr ext.) |
+| 97   | crashcymbal      | Crash (alt, Songsterr ext.)       |
+| 98   | openhihat        | Open Hi-Hat (alt, Songsterr ext.) |
 
 ## LilyPond typesetting choices
 
@@ -113,28 +136,35 @@ and is ignored here.
 - `ragged-right` — systems not stretched to fill page width
 - Section breaks (`\break`) before sections with ≥ 3 measures
 - Bar numbers every 4 measures, also at every system start
-- Custom `drumStyleTable` — hi-hat above staff (position 5, not 3)
+- Custom `drumStyleTable` — hi-hat above staff (position 5),
+  bass drum between lines 1 and 2 (position -3)
+- Grace notes always use `\acciaccatura` (never `\appoggiatura`)
+- `pedalhihat` + `bassdrum` on same beat: bass drum suppressed
 - No courtesy time signature at line ends
 - Letter paper, zero indent (no instrument name label)
 - Header: title, composer (artist), subtitle (drummer name)
 
 ## Songs tested successfully
 
-| Song              | Artist   | songId | partId | Notes                        |
-|-------------------|----------|--------|--------|------------------------------|
-| Gouge Away        | Pixies   | 15960  | 5      | Simple 4/4, v8               |
-| Wave of Mutilation| Pixies   | 16093  | 3      | v5 format, time sig changes  |
-| Slowly We Rot     | Obituary | 49310  | 4      | v8, blast beats, multi-tempo |
-| Pneuma            | Tool     | 455388 | 8      | v8, complex time sigs, tuplets|
-| Earth (unknown)   | unknown  | 412647 | 9      | v8, ties, complex fills      |
+| Song               | Artist   | songId | partId | Notes                               |
+|--------------------|----------|--------|--------|-------------------------------------|
+| Gouge Away         | Pixies   | 15960  | 5      | v8, half open hi-hat                |
+| Wave of Mutilation | Pixies   | 16093  | 3      | v5, time sig changes, china cymbal  |
+| Slowly We Rot      | Obituary | 49310  | 5      | v8, blast beats, multi-tempo, flams |
+| Into the Fire      | Dokken   | 5829   | 6      | v8, floor tom, ride cymbal          |
 
 ## Known issues / not yet implemented
 
-- **Ties**: `note["tie"] = true` present in JSON but not emitted. Notes play
-  correctly but no tie arc is drawn.
-- **Repeats**: Not seen in any song yet. Unknown how Songsterr encodes them.
+- **Ride cymbal vs hi-hat**: `ridecymbal` and `closedhihat` share staff
+  position 5 — visually identical. Future fix: move ride to position 6.
+- **Half open hi-hat symbol**: renders as `xcircle` (same as open hi-hat).
+  LilyPond has no distinct built-in symbol for half-open vs fully open.
+- **crashcymbalb notehead**: renders hollow due to LilyPond internal
+  hardcoding. Position is correct; hollow vs solid is cosmetic only.
+- **Ties**: stored in IR but arc rendering not yet verified across all songs.
+- **Repeats**: not seen in any song yet.
 - **Dynamics**: `velocity` field stored in IR but not emitted to LilyPond.
-- **`anacrusis` field**: Present in some v5 songs, currently ignored.
-  Could affect bar numbering for pickup measures.
-- **YouTube sync**: `Score.youtube_id` and `Score.youtube_offset` fields
-  exist in the IR but are never populated.
+- **anacrusis**: supported in parser but not yet tested on a pickup-bar song.
+- **YouTube sync**: `Score.youtube_id` / `Score.youtube_offset` fields exist
+  but are never populated.
+- **Pneuma (Tool)**: not yet retested with current fixes.

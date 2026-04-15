@@ -1,18 +1,12 @@
-# Cached score JSON files
+# Cache and output directories
 db/
-
-# Compiled output
 scores/
 
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
+*.pyc
 .venv/
-venv/
 
-# macOS
-.DS_Store
-
-# VS Code
-.vscode/
+# Update artifacts
+*.bak
+update_v*.zip

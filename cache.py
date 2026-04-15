@@ -38,11 +38,12 @@ def _list_to_frac(lst):
 
 def _drum_note_to_dict(dn):
     return {'midi': dn.midi, 'lily': dn.lily, 'voice': dn.voice,
-            'ghost': dn.ghost, 'accent': dn.accent}
+            'ghost': dn.ghost, 'accent': dn.accent, 'tie': dn.tie}
 
 def _dict_to_drum_note(d):
     return DrumNote(midi=d['midi'], lily=d['lily'], voice=d['voice'],
-                    ghost=d['ghost'], accent=d['accent'])
+                    ghost=d['ghost'], accent=d['accent'],
+                    tie=d.get('tie', False))
 
 def _event_to_dict(ev):
     return {
@@ -51,6 +52,7 @@ def _event_to_dict(ev):
         'notes':        [_drum_note_to_dict(n) for n in ev.notes],
         'grace':        ev.grace,
         'grace_type':   ev.grace_type,
+        'grace_is_v8':  ev.grace_is_v8,
         'tremolo_base': ev.tremolo_base,
         'hairpin':      ev.hairpin,
         'tuplet_n':     ev.tuplet_n,
@@ -68,6 +70,7 @@ def _dict_to_event(d):
         notes=[_dict_to_drum_note(n) for n in d['notes']],
         grace=d.get('grace', False),
         grace_type=d.get('grace_type', 'before'),
+        grace_is_v8=d.get('grace_is_v8', False),
         tremolo_base=d.get('tremolo_base'),
         hairpin=d.get('hairpin'),
         tuplet_n=d.get('tuplet_n'),
@@ -80,12 +83,13 @@ def _dict_to_event(d):
 
 def _measure_to_dict(m):
     return {
-        'index':    m.index,
-        'time_sig': list(m.time_sig),
-        'position': _frac_to_list(m.position),
-        'duration': _frac_to_list(m.duration),
-        'marker':   m.marker,
-        'events':   [_event_to_dict(e) for e in m.events],
+        'index':     m.index,
+        'time_sig':  list(m.time_sig),
+        'position':  _frac_to_list(m.position),
+        'duration':  _frac_to_list(m.duration),
+        'marker':    m.marker,
+        'anacrusis': m.anacrusis,
+        'events':    [_event_to_dict(e) for e in m.events],
     }
 
 def _dict_to_measure(d):
@@ -95,6 +99,7 @@ def _dict_to_measure(d):
         position=_list_to_frac(d['position']),
         duration=_list_to_frac(d['duration']),
         marker=d.get('marker'),
+        anacrusis=d.get('anacrusis'),
         events=[_dict_to_event(e) for e in d['events']],
     )
 

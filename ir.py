@@ -27,6 +27,7 @@ class DrumNote:
     voice: int           # 1 = stems up (cymbals/hats), 2 = stems down (kick/snare/toms)
     ghost: bool = False
     accent: int = 0      # 0 = none, 1 = accent (>), 2 = marcato (^)
+    tie: bool = False    # True = this note is tied to the next occurrence of the same drum
 
 
 @dataclass
@@ -38,6 +39,7 @@ class Event:
     # Articulation
     grace: bool = False              # is this a grace note?
     grace_type: str = 'before'       # 'before' = acciaccatura, 'on' = appoggiatura
+    grace_is_v8: bool = False        # True = v8-style grace (no cursor advance)
     tremolo_base: Optional[int] = None   # e.g. 32 means \repeat tremolo N { note32 }
     hairpin: Optional[str] = None        # 'start' | 'stop'
     # Notation hints (used by engraving backends)
@@ -58,6 +60,7 @@ class Measure:
     duration: Fraction       # total notated duration
     marker: Optional[str]    # section label e.g. 'Intro', 'Chorus'
     events: list             # list[Event], sorted by position
+    anacrusis: Optional[int] = None  # pickup note count (if set, measure is a pickup bar)
 
 
 @dataclass

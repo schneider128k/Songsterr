@@ -51,42 +51,83 @@ Verified the full pipeline works on Windows:
 
 ---
 
-## Current milestone — Milestone 4 (next session picks up here)
+## Milestone 4 — Systematic testing and parser/emitter fixes (completed)
 
-**Goal**: Systematic testing and parser/emitter fixes.
+Tested songs: Gouge Away (Pixies), Wave of Mutilation (Pixies),
+Slowly We Rot (Obituary), Into the Fire (Dokken).
 
-The PDF output should match the Songsterr score as closely as possible before
-any editor GUI is built. A buggy data foundation would make the editor painful
-to use.
+### Utility scripts added
+
+- `apply_update.py`: permanent script that applies versioned `update_vN.zip`
+  files, backing up replaced files automatically. Never needs updating.
+- `flush_cache.py`: deletes all cached score JSONs from `db/`. Run after
+  any update that changes `parser.py` or `ir.py`.
+- `.gitignore` updated: excludes `*.bak` and `update_v*.zip`
+
+### Bugs fixed in `parser.py`
+
+1. All drum note names were Songsterr aliases, not standard LilyPond names.
+   LilyPond silently drops unrecognised names — crashes, hi-hats and other
+   instruments were completely invisible in every PDF. Fixed by rewriting
+   the entire GM map to use canonical LilyPond drum names.
+2. MIDI 37 (Side Stick) mapped to snare — now maps to `sidestick`.
+3. MIDI 41 (Low Floor Tom) mapped to mid-tom — now maps to `lowfloortom`.
+4. MIDI 92 (Half Open Hi-Hat) missing from GM map — Songsterr-specific
+   extension. All half open hi-hat notes were silently dropped. Now maps
+   to `halfopenhihat`.
+5. `anacrusis` field ignored — pickup bars used wrong duration, corrupting
+   all subsequent measure positions. Fixed.
+6. Ties not stored — `DrumNote.tie` field added; parser reads it.
+7. v8 grace notes used fragile duration threshold for cursor advance —
+   replaced with explicit `Event.grace_is_v8` flag.
+
+### Bugs fixed in `emitter.py`
+
+8. Staff positions wrong: `crashcymbal` 7→5, `bassdrum` -5→-3, `pedalhihat` -6→-5.
+9. `crashcymbalb` renders hollow (LilyPond internal hardcoding) — emitted as
+   `crashcymbal` with `\once \override NoteHead.staff-position = #6`.
+10. `pedalhihat` + `bassdrum` collision — bassdrum suppressed when pedalhihat
+    present on same beat (matches Songsterr behaviour).
+11. `\appoggiatura` stole time from following note in drummode, causing bar
+    check failures. Fixed: always use `\acciaccatura`.
+12. Grace note emitted doubled main note, adding an extra beat to the measure.
+    Fixed: grace token emits only the `\acciaccatura { }` prefix.
+13. Double `\time` at start of score — fixed by initialising `prev_sig`
+    to first measure's time sig.
+14. Mid-measure tempo changes silently dropped — fixed.
+15. `_fill_rests` silent fallback — now prints a warning to stderr.
+16. `SyntaxWarning` in docstring — converted to raw string.
+
+### Known remaining issues
+
+- Ride cymbal and closed hi-hat share staff position 5 (visually identical).
+- Half open hi-hat renders as `xcircle` (same as open hi-hat) — LilyPond
+  has no distinct built-in symbol.
+- `crashcymbalb` still renders hollow — cosmetic only, position is correct.
+- Ties stored in IR but arc rendering not yet verified across all songs.
+- Pneuma (Tool) not yet retested with current fixes.
+
+---
+
+## Current milestone — Milestone 5 (next session picks up here)
+
+**Goal**: CDN URL automation.
+
+Given a Songsterr page URL, automatically find the CDN URL for the drum track
+so the user never has to use DevTools manually.
 
 Tasks:
-1. Test all known songs and carefully compare PDF output against the Songsterr
-   score in the browser, documenting every mismatch
-2. Known songs to test:
-   - Gouge Away — Pixies (songId=15960, partId=5) — simple 4/4, v8
-   - Wave of Mutilation — Pixies (songId=16093, partId=3) — v5, time sig changes
-   - Slowly We Rot — Obituary (songId=49310, partId=4) — v8, blast beats, multi-tempo
-   - Pneuma — Tool (songId=455388, partId=8) — v8, complex time sigs, tuplets
-   - Into the Fire — Dokken (songId=5829) — already tested on desktop
-3. Document mismatches: wrong drum instrument, wrong rhythm, missing notes,
-   bar check warnings, anything that looks off in the PDF
-4. Fix bugs found in `parser.py` and/or `emitter.py`
-5. Known issues to investigate during this milestone:
-   - Ties: `note["tie"] = true` present in JSON but not emitted (no tie arc drawn)
-   - `anacrusis` field in v5 songs currently ignored (may affect bar numbering)
-   - Any wrong GM drum mappings for the user's kit:
-     Crash, Ride, Hi-Hat (closed/open/pedal), Snare, Side Stick,
-     High Tom, Mid Tom, Floor Tom, Bass Drum
-6. Once all fixes confirmed working, update logbook and push
+1. Investigate Songsterr's page structure and API to find how the CDN URL
+   is embedded or derivable from the song page URL
+2. Implement `resolve_cdn_url(page_url) -> str` in a new `songsterr_api.py`
+3. Update `pipeline.py` and `main.py` to accept either a CDN URL or a
+   Songsterr page URL transparently
+4. Test on all known songs
+5. Update README and logbook, push
 
 ---
 
 ## Planned milestones (future)
-
-**Milestone 5 — CDN URL automation**
-- Given a Songsterr page URL, automatically find the CDN URL for the drum track
-- `python main.py https://www.songsterr.com/a/wsa/...` just works
-- No more manual DevTools fishing
 
 **Milestone 6 — Browser-based grid editor**
 - `python editor.py` starts a local server and opens the browser automatically
@@ -102,6 +143,7 @@ Tasks:
   compose a new score from scratch
 
 **Milestone 7 — Notation polish**
-- Tie arcs emitted to LilyPond
+- Tie arcs emitted and verified
 - Dynamics (`velocity`) emitted
+- Ride cymbal moved to staff position 6 (above hi-hat)
 - Any remaining notation improvements found during editor use
