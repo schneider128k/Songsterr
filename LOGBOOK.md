@@ -129,7 +129,7 @@ Tasks:
 
 ## Planned milestones (future)
 
-**Milestone 6 — Browser-based grid editor**
+**Milestone 6 — Browser-based grid editor with playback**
 - `python editor.py` starts a local server and opens the browser automatically
 - Grid view: rows = drum instruments, columns = 1/16 beats, continuous scroll
 - Drum rows: Crash, Ride, Hi-Hat, Open Hi-Hat, Hi-Hat Pedal, Snare, Side Stick,
@@ -141,6 +141,14 @@ Tasks:
 - No new pip dependencies (stdlib `http.server` + `webbrowser` only)
 - Supports both workflows: correct an existing Songsterr score, or
   compose a new score from scratch
+- **Playback**: browser-based audio playback using Tone.js (Web Audio API)
+  with a GM drumkit sample pack. Play/stop/loop controls in the toolbar.
+  Playhead scrolls through the grid in sync with audio. Timing derived
+  directly from Score.seconds_at() using the IR tempo map, so tempo changes
+  and odd time signatures are handled correctly. Sample quality is comparable
+  to a standard GM synthesizer — sufficient for checking that a score
+  sounds right. Works in any browser including Safari on other devices
+  connected to the same local server.
 
 **Milestone 7 — Notation polish**
 - Tie arcs emitted and verified

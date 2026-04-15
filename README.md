@@ -153,7 +153,18 @@ and is ignored here.
 | Slowly We Rot      | Obituary | 49310  | 5      | v8, blast beats, multi-tempo, flams |
 | Into the Fire      | Dokken   | 5829   | 6      | v8, floor tom, ride cymbal          |
 
-## Known issues / not yet implemented
+## Planned features
+
+- **CDN URL automation**: pass a Songsterr page URL directly —
+  no more DevTools fishing for the CDN URL.
+- **Browser-based grid editor**: `python editor.py` opens a local web UI
+  with a drum grid (rows = instruments, columns = 1/16 beats). Click to
+  toggle hits, edit section markers, change time signatures, compile to PDF.
+- **Browser playback**: integrated into the editor. Uses Tone.js (Web Audio
+  API) with a GM drumkit sample pack. Play/stop/loop controls with a
+  scrolling playhead. Timing derived from `Score.seconds_at()` so tempo
+  changes and odd time signatures are handled correctly. Accessible from
+  any browser on the local network.
 
 - **Ride cymbal vs hi-hat**: `ridecymbal` and `closedhihat` share staff
   position 5 — visually identical. Future fix: move ride to position 6.
