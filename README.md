@@ -165,6 +165,11 @@ and is ignored here.
   scrolling playhead. Timing derived from `Score.seconds_at()` so tempo
   changes and odd time signatures are handled correctly. Accessible from
   any browser on the local network.
+- **YouTube sync**: embed a YouTube player alongside the grid. Paste a
+  YouTube URL and set a time offset (where beat 1 falls in the video).
+  Drum playback and video play in sync, with independent volume control
+  so the drum track can be louder than the video audio. Offset stored in
+  `Score.youtube_offset` (field already exists in the IR).
 
 - **Ride cymbal vs hi-hat**: `ridecymbal` and `closedhihat` share staff
   position 5 — visually identical. Future fix: move ride to position 6.

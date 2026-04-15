@@ -149,6 +149,15 @@ Tasks:
   to a standard GM synthesizer — sufficient for checking that a score
   sounds right. Works in any browser including Safari on other devices
   connected to the same local server.
+- **YouTube sync**: embed a YouTube player in the editor. User pastes the
+  YouTube URL and sets a time offset (where beat 1 of measure 1 falls in
+  the video). Play starts both the YouTube video and the Tone.js drum
+  playback simultaneously. Volume balance is independent — drum playback
+  can be louder than the video audio. Offset is saved into the cached
+  score JSON via the existing `Score.youtube_offset` field (already in IR,
+  never yet populated). Sync drift from YouTube's IFrame API is corrected
+  by periodically polling `player.getCurrentTime()` and nudging the
+  Tone.js transport.
 
 **Milestone 7 — Notation polish**
 - Tie arcs emitted and verified
