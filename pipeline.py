@@ -73,7 +73,7 @@ def fetch_and_parse(cdn_url: str) -> Score:
     return score
 
 
-def compile_to_pdf(score: Score, output_dir: str = SCORES_DIR) -> str:
+def compile_to_pdf(score: Score, output_dir: str = SCORES_DIR, drum_key: bool = True) -> str:
     """
     Emit LilyPond source for score, compile to PDF, return the PDF path.
     Auto-detects the LilyPond binary.
@@ -84,7 +84,7 @@ def compile_to_pdf(score: Score, output_dir: str = SCORES_DIR) -> str:
     lily_version = get_lilypond_version(lily_bin)
     print(f'Using LilyPond {lily_version} at {lily_bin}')
 
-    ly_source = emit_lilypond(score, version=lily_version)
+    ly_source = emit_lilypond(score, version=lily_version, drum_key=drum_key)
 
     safe     = re.sub(r'[^\w\s-]', '', f'{score.artist}_{score.title}').replace(' ', '_')
     ly_path  = os.path.join(output_dir, f'{safe}_drums.ly')
@@ -119,8 +119,8 @@ def compile_to_pdf(score: Score, output_dir: str = SCORES_DIR) -> str:
     return pdf_path
 
 
-def run_pipeline(cdn_url: str) -> str:
+def run_pipeline(cdn_url: str, drum_key: bool = True) -> str:
     """Full pipeline: fetch → parse → cache → emit → compile → PDF path."""
     score    = fetch_and_parse(cdn_url)
-    pdf_path = compile_to_pdf(score)
+    pdf_path = compile_to_pdf(score, drum_key=drum_key)
     return pdf_path

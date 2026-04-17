@@ -1,4 +1,4 @@
-"""
+r"""
 emitter.py — Compile a Score IR to a LilyPond source string.
 
 Typesetting choices:
@@ -69,10 +69,16 @@ def _event_to_token(ev, force_dur=None):
     if ev.grace:
         if not ev.notes:
             return None
-        cmd   = '\\appoggiatura' if ev.grace_type == 'on' else '\\acciaccatura'
         nms   = sorted({n.lily for n in ev.notes})
         inner = nms[0] if len(nms) == 1 else '<' + ' '.join(nms) + '>'
-        return f'{cmd} {{ {inner}8 }} {inner}{ly_dur}'
+        if ev.grace_type == 'on':
+            # onBeat (v8): emit only the appoggiatura prefix — the following
+            # normal event provides the target note. Emitting the note twice
+            # adds spurious 1/64 duration causing bar check failures.
+            return f'\\appoggiatura {{ {inner}8 }}'
+        else:
+            # beforeBeat (v5 flam / v8 acciaccatura): self-contained token
+            return f'\\acciaccatura {{ {inner}8 }} {inner}{ly_dur}'
 
     # Rest
     if not ev.notes:
@@ -214,24 +220,22 @@ def _emit_measure(events, measure_dur, measure_pos):
 # Custom drum style table.
 # Positions: 0=middle line, 4=top line, 5=space above top line,
 # 6=first ledger line above, -4=bottom line, -5=space below bottom.
-# FIX 1 (v18): acousticsnare/snare/electricsnare/sn moved from 0 to -1
-# (space between lines 2 and 3 — standard snare drum position).
-# FIX (v19): Staff positions updated for collision-free layout validated
-# across 5 songs (Square Hammer, In the Air Tonight, Smells Like Teen Spirit,
-# Rosanna, Money):
-#   ridecymbal/cymr/ridebell: 5 -> 4  (on top line, distinct from hi-hat at 5)
-#   lowmidtom/tomml:          1 -> 0  (middle line, avoids snare collision at 1)
-#   highfloortom/tomfh:      -2 -> -3 (avoids sidestick collision at -2)
-#   lowfloortom/tomfl:       -3 -> -4 (shifted down with highfloortom)
+# Staff position history (LilyPond positions: 0=middle line, +1=space above it):
+#   v18: snare moved 0 -> -1 (then corrected again)
+#   v19: ride 5->4, tomml 1->0, tomfh -2->-3, tomfl -3->-4
+#   v21: snare corrected to +1 (space between lines 3 and 4 = standard position)
+# Final collision-free layout validated across 5 songs:
+#   crashcymbal +7, hihat +5, ride +4, hightom +3, himidtom +2,
+#   snare +1, lowtom 0 ... wait, tomml is 0, snare is +1 -- no collision.
 _DRUM_STYLE = """\
 #(alist->hash-table '(
   (acousticbassdrum default #f -5)
   (bassdrum         default #f -5)
   (bd               default #f -5)
-  (acousticsnare    default #f -1)
-  (snare            default #f -1)
-  (electricsnare    default #f -1)
-  (sn               default #f -1)
+  (acousticsnare    default #f  1)
+  (snare            default #f  1)
+  (electricsnare    default #f  1)
+  (sn               default #f  1)
   (sidestick        cross   #f -2)
   (hihat            cross   #f  5)
   (closedhihat      cross   #f  5)
@@ -274,6 +278,103 @@ _DRUM_STYLE = """\
 """
 
 
+
+# Ordered list of all drum instruments for the "Drum Key" legend,
+# top to bottom by staff position. Only instruments that actually
+# appear in the score are included.
+_DRUM_KEY_ORDER = [
+    # (canonical lily name,  display label)
+    ('crashcymbal',   'Crash'),
+    ('crashcymbalb',  'Crash 2'),
+    ('ridecymbal',    'Ride'),
+    ('ridebell',      'Ride Bell'),
+    ('closedhihat',   'Hi-Hat'),
+    ('halfopenhihat', 'Hi-Hat (half open)'),
+    ('openhihat',     'Hi-Hat (open)'),
+    ('pedalhihat',    'Hi-Hat (foot)'),
+    ('hightom',       'High Tom'),
+    ('tommh',         'Hi-Mid Tom'),
+    ('acousticsnare', 'Snare'),
+    ('sidestick',     'Side Stick'),
+    ('tomml',         'Low-Mid Tom'),
+    ('lowtom',        'Low Tom'),
+    ('highfloortom',  'High Floor Tom'),
+    ('lowfloortom',   'Low Floor Tom'),
+    ('bassdrum',      'Bass Drum'),
+]
+
+# Alias → canonical name (so e.g. 'sn' counts as 'acousticsnare')
+_DRUM_KEY_ALIASES = {
+    'snare': 'acousticsnare', 'electricsnare': 'acousticsnare', 'sn': 'acousticsnare',
+    'bd': 'bassdrum',
+    'hh': 'closedhihat', 'hho': 'openhihat', 'hhp': 'pedalhihat',
+    'cymca': 'crashcymbal', 'cymcb': 'crashcymbalb',
+    'cymr': 'ridecymbal',
+    'tomfh': 'highfloortom', 'tomfl': 'lowfloortom',
+    'tomh': 'hightom', 'toml': 'lowtom',
+}
+
+
+def _emit_drum_key(score: 'Score') -> str:
+    """
+    Return LilyPond source for the Drum Key legend appended after the score.
+    Shows one labeled notehead per instrument that actually appears in the
+    score, ordered top-to-bottom on the staff, inside a cadenzaOn block so
+    LilyPond does not insert bar checks or time-signature changes.
+    """
+    # Collect all lily names used anywhere in the score
+    used = set()
+    for meas in score.measures:
+        for ev in meas.events:
+            for note in ev.notes:
+                canonical = _DRUM_KEY_ALIASES.get(note.lily, note.lily)
+                used.add(canonical)
+
+    # Filter the ordered table to only used instruments
+    entries = [(lily, label) for lily, label in _DRUM_KEY_ORDER if lily in used]
+    if not entries:
+        return ''
+
+    # Build note tokens: each instrument gets a quarter note with a text label
+    # below, separated by quarter rests so the labels have breathing room.
+    tokens = []
+    for lily, label in entries:
+        escaped = label.replace('"', '\\"')
+        tokens.append(
+            f'{lily}4_\\markup {{ \\small "{escaped}" }}'
+        )
+        tokens.append('s1')
+
+    notes = ' '.join(tokens)
+
+    # Build the block using a list to avoid backslash-in-f-string issues
+    L = [
+        '\\score {',
+        '  \\new DrumStaff \\with {',
+        '    \\override StaffSymbol.line-count = #5',
+        f'    drumStyleTable = {_DRUM_STYLE}',
+        '  } {',
+        '    \\new DrumVoice \\drummode {',
+        '      \\stemDown',
+        '      \\cadenzaOn',
+        '      \\omit Score.TimeSignature',
+        '      \\omit Score.BarNumber',
+        '      \\mark \\markup { \\box "Drum Key" }',
+        f'      {notes}',
+        '    }',
+        '  }',
+        '  \\layout {',
+        '    \\context {',
+        '      \\Score',
+        '      \\override RehearsalMark.font-size = #1',
+        '      \\override RehearsalMark.padding   = #1',
+        '    }',
+        '  }',
+        '}',
+    ]
+    return '\n'.join(L) + '\n'
+
+
 def _compute_section_lengths(measures):
     """
     For each measure that starts a section (has a marker), count how many
@@ -305,8 +406,10 @@ def _is_pickup(measures):
     return all_rests
 
 
-def emit_lilypond(score: Score, version: str) -> str:
-    """Compile a Score IR to a LilyPond source string."""
+def emit_lilypond(score: Score, version: str, drum_key: bool = True) -> str:
+    """Compile a Score IR to a LilyPond source string.
+    If drum_key is True (default), append a Drum Key legend at the end.
+    """
     voice_lines = []
 
     sorted_tempos = sorted(score.tempo_changes, key=lambda t: t.position)
@@ -358,7 +461,7 @@ def emit_lilypond(score: Score, version: str) -> str:
     ts0 = f'{main_sig[0]}/{main_sig[1]}'
 
     # Build subtitle: show drummer if known
-    subtitle_line = (f'  subtitle = "drums: {score.drummer}"'
+    subtitle_line = (f'  subtitle = "{score.drummer}"'
                      if score.drummer else '')
 
     lines = [
@@ -411,4 +514,7 @@ def emit_lilypond(score: Score, version: str) -> str:
         '}',
     ]
 
-    return '\n'.join(lines) + '\n'
+    result = '\n'.join(lines) + '\n'
+    if drum_key:
+        result += '\n' + _emit_drum_key(score)
+    return result

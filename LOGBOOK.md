@@ -118,13 +118,43 @@ Collision-free layout validated across all 5 songs:
 
 ---
 
+## Milestone 4 continued — Grace note bar check fix (update v20)
+
+**Bug**: `onBeat` grace notes (v8 format, `ppoggiatura` style) were emitting
+`\appoggiatura { note8 } noteXX` — but the following normal event at the same
+position also emitted its note. LilyPond counted `noteXX` as real duration,
+causing bar check failures (7 warnings in Smells Like Teen Spirit).
+
+**Fix in `emitter.py`**: for `grace_type='on'`, emit only `\appoggiatura { note8 }`
+(no trailing note). The following normal event already provides the target.
+`beforeBeat` / `acciaccatura` style is unchanged (self-contained token).
+
+**Also fixed**: `SyntaxWarning` about `\s` in emitter.py docstring — changed
+module docstring to a raw string (`r"""`).
+
+**No cache flush needed** (emitter.py only).
+
+## Milestone 4 continued — Snare position corrected (update v21)
+
+**Bug**: Snare was at position -1 (space between lines 2 and 3 — below middle
+line). The standard published position is +1 (space between lines 3 and 4 —
+above middle line), which matches Songsterr's rendering.
+
+**Fix in `emitter.py`**: `acousticsnare`/`snare`/`electricsnare`/`sn`: -1 → +1.
+
+Final collision-free layout:
+  crashcymbal +7, hihat +5, ride +4, hightom +3, himidtom +2,
+  snare +1, tomml 0, lowtom -1, sidestick -2, tomfh -3, tomfl -4, bassdrum -5
+
+**No cache flush needed** (emitter.py only).
+
 ## Current milestone — Milestone 5: CDN URL automation
 
 **Goal**: `python main.py https://www.songsterr.com/a/wsa/...` just works,
 with no manual DevTools fishing for the CDN URL.
 
 Given a Songsterr page URL, the pipeline should automatically determine the
-CDN URL for the drum track. **Next update will be v20.**
+CDN URL for the drum track. **Next update will be v22.**
 
 ---
 
