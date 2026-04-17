@@ -479,7 +479,7 @@ def emit_lilypond(score: Score, version: str, drum_key: bool = True) -> str:
         '  #(set-paper-size "letter")',
         '  indent             = 0',
         '  short-indent       = 0',
-        '  ragged-right       = ##t',
+        '  ragged-right       = ##f',
         '  ragged-last-bottom = ##f',
         '  system-system-spacing.basic-distance = #12',
         '  system-system-spacing.padding        = #2',
