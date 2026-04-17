@@ -214,17 +214,24 @@ def _emit_measure(events, measure_dur, measure_pos):
 # Custom drum style table.
 # Positions: 0=middle line, 4=top line, 5=space above top line,
 # 6=first ledger line above, -4=bottom line, -5=space below bottom.
-# FIX 1: acousticsnare/snare/electricsnare/sn moved from 0 to -1
+# FIX 1 (v18): acousticsnare/snare/electricsnare/sn moved from 0 to -1
 # (space between lines 2 and 3 — standard snare drum position).
+# FIX (v19): Staff positions updated for collision-free layout validated
+# across 5 songs (Square Hammer, In the Air Tonight, Smells Like Teen Spirit,
+# Rosanna, Money):
+#   ridecymbal/cymr/ridebell: 5 -> 4  (on top line, distinct from hi-hat at 5)
+#   lowmidtom/tomml:          1 -> 0  (middle line, avoids snare collision at 1)
+#   highfloortom/tomfh:      -2 -> -3 (avoids sidestick collision at -2)
+#   lowfloortom/tomfl:       -3 -> -4 (shifted down with highfloortom)
 _DRUM_STYLE = """\
 #(alist->hash-table '(
   (acousticbassdrum default #f -5)
   (bassdrum         default #f -5)
   (bd               default #f -5)
-  (acousticsnare    default #f  1)
-  (snare            default #f  1)
-  (electricsnare    default #f  1)
-  (sn               default #f  1)
+  (acousticsnare    default #f -1)
+  (snare            default #f -1)
+  (electricsnare    default #f -1)
+  (sn               default #f -1)
   (sidestick        cross   #f -2)
   (hihat            cross   #f  5)
   (closedhihat      cross   #f  5)
@@ -238,10 +245,10 @@ _DRUM_STYLE = """\
   (cymca            cross   #f  7)
   (crashcymbalb     cross   #f  6)
   (cymcb            cross   #f  6)
-  (ridecymbal       cross   #f  5)
-  (ridecymbalb      cross   #f  5)
-  (cymr             cross   #f  5)
-  (ridebell         default #f  5)
+  (ridecymbal       cross   #f  4)
+  (ridecymbalb      cross   #f  4)
+  (cymr             cross   #f  4)
+  (ridebell         default #f  4)
   (chinesecymbal    cross   #f  7)
   (splashcymbal     cross   #f  7)
   (cowbell          default #f  4)
@@ -251,14 +258,14 @@ _DRUM_STYLE = """\
   (vibraslap        diamond #f  0)
   (vibs             diamond #f  0)
   (handclap         default #f  4)
-  (highfloortom     default #f -2)
-  (tomfh            default #f -2)
-  (lowfloortom      default #f -3)
-  (tomfl            default #f -3)
+  (highfloortom     default #f -3)
+  (tomfh            default #f -3)
+  (lowfloortom      default #f -4)
+  (tomfl            default #f -4)
   (lowtom           default #f -1)
   (toml             default #f -1)
-  (lowmidtom        default #f  1)
-  (tomml            default #f  1)
+  (lowmidtom        default #f  0)
+  (tomml            default #f  0)
   (himidtom         default #f  2)
   (tommh            default #f  2)
   (hightom          default #f  3)

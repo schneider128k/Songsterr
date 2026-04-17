@@ -53,8 +53,8 @@ Verified the full pipeline works on Windows:
 
 ## Milestone 4 — Systematic testing and parser/emitter fixes (completed)
 
-Tested songs: Gouge Away (Pixies), Wave of Mutilation (Pixies),
-Slowly We Rot (Obituary), Into the Fire (Dokken).
+**Goal**: PDF output should match the Songsterr score as closely as possible
+before any editor GUI is built.
 
 ### Utility scripts added
 
@@ -62,105 +62,83 @@ Slowly We Rot (Obituary), Into the Fire (Dokken).
   files, backing up replaced files automatically. Never needs updating.
 - `flush_cache.py`: deletes all cached score JSONs from `db/`. Run after
   any update that changes `parser.py` or `ir.py`.
-- `.gitignore` updated: excludes `*.bak` and `update_v*.zip`
 
 ### Bugs fixed in `parser.py`
 
-1. All drum note names were Songsterr aliases, not standard LilyPond names.
-   LilyPond silently drops unrecognised names — crashes, hi-hats and other
-   instruments were completely invisible in every PDF. Fixed by rewriting
-   the entire GM map to use canonical LilyPond drum names.
-2. MIDI 37 (Side Stick) mapped to snare — now maps to `sidestick`.
-3. MIDI 41 (Low Floor Tom) mapped to mid-tom — now maps to `lowfloortom`.
-4. MIDI 92 (Half Open Hi-Hat) missing from GM map — Songsterr-specific
-   extension. All half open hi-hat notes were silently dropped. Now maps
-   to `halfopenhihat`.
-5. `anacrusis` field ignored — pickup bars used wrong duration, corrupting
-   all subsequent measure positions. Fixed.
-6. Ties not stored — `DrumNote.tie` field added; parser reads it.
-7. v8 grace notes used fragile duration threshold for cursor advance —
-   replaced with explicit `Event.grace_is_v8` flag.
+1. All drum note names were Songsterr aliases — rewrote entire GM map to use
+   canonical LilyPond drum names (`crashcymbal`, `closedhihat`, etc.)
+2. MIDI 37 (Side Stick) → `sidestick`
+3. MIDI 41 (Low Floor Tom) → `lowfloortom`
+4. MIDI 92 (Half Open Hi-Hat, Songsterr ext.) → `halfopenhihat`
+5. `anacrusis` / pickup bar duration fixed
+6. Ties: `DrumNote.tie` field added; parser reads it
+7. v8 grace note cursor handling fixed
 
-### Bugs fixed in `emitter.py`
+### Bugs fixed in `emitter.py` (update v18)
 
-8. Staff positions wrong: `crashcymbal` 7→5, `bassdrum` -5→-3, `pedalhihat` -6→-5.
-9. `crashcymbalb` renders hollow (LilyPond internal hardcoding) — emitted as
-   `crashcymbal` with `\once \override NoteHead.staff-position = #6`.
-10. `pedalhihat` + `bassdrum` collision — bassdrum suppressed when pedalhihat
-    present on same beat (matches Songsterr behaviour).
-11. `\appoggiatura` stole time from following note in drummode, causing bar
-    check failures. Fixed: always use `\acciaccatura`.
-12. Grace note emitted doubled main note, adding an extra beat to the measure.
-    Fixed: grace token emits only the `\acciaccatura { }` prefix.
-13. Double `\time` at start of score — fixed by initialising `prev_sig`
-    to first measure's time sig.
-14. Mid-measure tempo changes silently dropped — fixed.
-15. `_fill_rests` silent fallback — now prints a warning to stderr.
-16. `SyntaxWarning` in docstring — converted to raw string.
-
-### Known remaining issues
-
-- Ride cymbal and closed hi-hat share staff position 5 (visually identical).
-- Half open hi-hat renders as `xcircle` (same as open hi-hat) — LilyPond
-  has no distinct built-in symbol.
-- `crashcymbalb` still renders hollow — cosmetic only, position is correct.
-- Ties stored in IR but arc rendering not yet verified across all songs.
-- Pneuma (Tool) not yet retested with current fixes.
+1. Snare position: `acousticsnare`/`snare`/`electricsnare`/`sn`: 0 → -1
+2. Pickup bar: rest-only measure with different time sig emits `\partial`
+   instead of `\time`, matching Songsterr bar numbering
+3. Tie validation: only emit `~` when tied note's lily name appears in next
+   non-grace event (prevents spurious arcs)
 
 ---
 
-## Current milestone — Milestone 5 (next session picks up here)
+## Milestone 4 continued — GM map verification and staff position audit (completed)
 
-**Goal**: CDN URL automation.
+**Songs analysed** (update v19): Square Hammer (Ghost), In the Air Tonight
+(Phil Collins), Smells Like Teen Spirit (Nirvana), Rosanna (Toto),
+Money (Pink Floyd)
 
-Given a Songsterr page URL, automatically find the CDN URL for the drum track
-so the user never has to use DevTools manually.
+### Changes in `emitter.py` — `_DRUM_STYLE` positions
 
-Tasks:
-1. Investigate Songsterr's page structure and API to find how the CDN URL
-   is embedded or derivable from the song page URL
-2. Implement `resolve_cdn_url(page_url) -> str` in a new `songsterr_api.py`
-3. Update `pipeline.py` and `main.py` to accept either a CDN URL or a
-   Songsterr page URL transparently
-4. Test on all known songs
-5. Update README and logbook, push
+Collision-free layout validated across all 5 songs:
+
+| Instrument           | lily names                     | Old pos | New pos |
+|----------------------|--------------------------------|---------|---------|
+| Crash cymbal         | `crashcymbal`/`cymca`          | 7       | 7       |
+| Hi-Hat               | `closedhihat`/`hh`/`hho`       | 5       | 5       |
+| **Ride cymbal**      | `ridecymbal`/`cymr`/`ridebell` | **5**   | **4**   |
+| High Tom             | `hightom`/`tomh`               | 3       | 3       |
+| Hi-Mid Tom           | `tommh`                        | 2       | 2       |
+| Snare (v18)          | `acousticsnare` etc.           | 1       | 1       |
+| **Low-Mid Tom**      | `tomml`/`lowmidtom`            | **1**   | **0**   |
+| Low Tom              | `lowtom`/`toml`                | -1      | -1      |
+| Side Stick           | `sidestick`                    | -2      | -2      |
+| **High Floor Tom**   | `tomfh`/`highfloortom`         | **-2**  | **-3**  |
+| **Low Floor Tom**    | `tomfl`/`lowfloortom`          | **-3**  | **-4**  |
+| Bass Drum            | `bassdrum`/`bd`                | -5      | -5      |
+
+### New fret mappings in `parser.py` (update v19)
+
+- Fret 27 → `bassdrum` (CR-78 bass sound, In the Air Tonight part 10)
+- Fret 93 → `ridecymbal` (Ride area variant, Rosanna)
+
+**After applying update_v19.zip, run `python flush_cache.py` before retesting.**
+
+---
+
+## Current milestone — Milestone 5: CDN URL automation
+
+**Goal**: `python main.py https://www.songsterr.com/a/wsa/...` just works,
+with no manual DevTools fishing for the CDN URL.
+
+Given a Songsterr page URL, the pipeline should automatically determine the
+CDN URL for the drum track. **Next update will be v20.**
 
 ---
 
 ## Planned milestones (future)
 
-**Milestone 6 — Browser-based grid editor with playback**
-- `python editor.py` starts a local server and opens the browser automatically
-- Grid view: rows = drum instruments, columns = 1/16 beats, continuous scroll
-- Drum rows: Crash, Ride, Hi-Hat, Open Hi-Hat, Hi-Hat Pedal, Snare, Side Stick,
-  High Tom, Mid Tom, Floor Tom, Bass Drum
-- Left click = toggle hit, Shift+click = cycle accent (normal → accent → ghost)
-- Right-click measure header = edit section marker text
-- Toolbar: load cached score, new blank score, add/delete measure,
-  change time signature, Compile → PDF, Save
-- No new pip dependencies (stdlib `http.server` + `webbrowser` only)
-- Supports both workflows: correct an existing Songsterr score, or
-  compose a new score from scratch
-- **Playback**: browser-based audio playback using Tone.js (Web Audio API)
-  with a GM drumkit sample pack. Play/stop/loop controls in the toolbar.
-  Playhead scrolls through the grid in sync with audio. Timing derived
-  directly from Score.seconds_at() using the IR tempo map, so tempo changes
-  and odd time signatures are handled correctly. Sample quality is comparable
-  to a standard GM synthesizer — sufficient for checking that a score
-  sounds right. Works in any browser including Safari on other devices
-  connected to the same local server.
-- **YouTube sync**: embed a YouTube player in the editor. User pastes the
-  YouTube URL and sets a time offset (where beat 1 of measure 1 falls in
-  the video). Play starts both the YouTube video and the Tone.js drum
-  playback simultaneously. Volume balance is independent — drum playback
-  can be louder than the video audio. Offset is saved into the cached
-  score JSON via the existing `Score.youtube_offset` field (already in IR,
-  never yet populated). Sync drift from YouTube's IFrame API is corrected
-  by periodically polling `player.getCurrentTime()` and nudging the
-  Tone.js transport.
+**Milestone 6 — Browser-based grid editor**
+- `python editor.py` opens a local web UI with a drum grid
+  (rows = instruments, columns = 1/16 beats)
+- Toggle hits, edit section markers, change time signatures, compile to PDF
+- **Browser playback**: Tone.js with GM drumkit sample pack
+- **YouTube sync**: embed YouTube player, set time offset, drum + video in sync
+- Both "correct existing" and "blank score from scratch" workflows
 
 **Milestone 7 — Notation polish**
-- Tie arcs emitted and verified
+- Tie arcs emitted to LilyPond
 - Dynamics (`velocity`) emitted
-- Ride cymbal moved to staff position 6 (above hi-hat)
-- Any remaining notation improvements found during editor use
+- Any remaining notation improvements

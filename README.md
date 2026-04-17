@@ -11,7 +11,7 @@ CDN URL
   ↓  requests.get()
 Songsterr JSON (v5 or v8 format)
   ↓  parse_json()
-Score IR  ←→  disk cache (db/{songId}_{partId}.json)
+Score IR  ↔  disk cache (db/{songId}_{partId}.json)
   ↓  emit_lilypond()
 score.ly
   ↓  lilypond (subprocess)
@@ -24,8 +24,6 @@ score.pdf  →  scores/
 pip install requests
 python main.py <CDN_URL>   # fetch, parse, compile to PDF
 python main.py             # list cached scores
-python flush_cache.py      # delete all cached score JSONs
-python apply_update.py update_vN.zip  # apply a versioned update
 ```
 
 ### How to get a CDN URL from Songsterr
@@ -51,8 +49,8 @@ ir.py              Score / Measure / Event / DrumNote / TempoChange dataclasses
 parser.py          parse_json() — handles Songsterr JSON v5 and v8
 cache.py           save_score() / load_score() / list_cached()
 emitter.py         emit_lilypond() — compiles Score IR to LilyPond source
-flush_cache.py     delete all cached score JSONs (run after parser/IR updates)
-apply_update.py    apply a versioned update_vN.zip to the project
+apply_update.py    permanent: applies update_vN.zip, backs up old files
+flush_cache.py     permanent: deletes all cached score JSONs from db/
 db/                local JSON cache (gitignored)
 scores/            output PDFs and .ly files (gitignored)
 ```
@@ -67,19 +65,6 @@ LilyPond is auto-detected in this order:
 1. `LILYPOND_BIN` environment variable
 2. Platform-specific known paths (macOS app bundle / Homebrew, Linux apt, Windows)
 3. `lilypond` on PATH
-
-## Update workflow
-
-When a new `update_vN.zip` is provided:
-
-```bash
-python apply_update.py update_vN.zip   # backs up old files, applies new ones
-python flush_cache.py                  # only if parser.py or ir.py changed
-python main.py <CDN_URL>               # re-run to verify
-```
-
-`apply_update.py` and `flush_cache.py` are permanent utility scripts —
-they never need to be updated themselves.
 
 ## Songsterr JSON formats
 
@@ -102,85 +87,87 @@ Two versions exist in the wild:
 instrument. The `string` field is only used by Songsterr's canvas renderer
 and is ignored here.
 
-## GM Drum Map (fret → LilyPond name)
+## GM Drum Map (selected frets → LilyPond name)
 
-| MIDI | LilyPond name    | Description                       |
-|------|------------------|-----------------------------------|
-| 35   | bassdrum         | Bass Drum 2                       |
-| 36   | bassdrum         | Bass Drum 1                       |
-| 37   | sidestick        | Side Stick                        |
-| 38   | acousticsnare    | Acoustic Snare                    |
-| 40   | electricsnare    | Electric Snare                    |
-| 41   | lowfloortom      | Low Floor Tom                     |
-| 42   | closedhihat      | Closed Hi-Hat                     |
-| 43   | highfloortom     | High Floor Tom                    |
-| 44   | pedalhihat       | Pedal Hi-Hat                      |
-| 45   | lowtom           | Low Tom                           |
-| 46   | openhihat        | Open Hi-Hat                       |
-| 47   | lowmidtom        | Low-Mid Tom                       |
-| 48   | himidtom         | High-Mid Tom                      |
-| 49   | crashcymbal      | Crash Cymbal 1                    |
-| 50   | hightom          | High Tom                          |
-| 51   | ridecymbal       | Ride Cymbal 1                     |
-| 52   | chinesecymbal    | Chinese Cymbal                    |
-| 57   | crashcymbalb     | Crash Cymbal 2                    |
-| 92   | halfopenhihat    | Half Open Hi-Hat (Songsterr ext.) |
-| 97   | crashcymbal      | Crash (alt, Songsterr ext.)       |
-| 98   | openhihat        | Open Hi-Hat (alt, Songsterr ext.) |
+| MIDI | LilyPond     | Description              |
+|------|--------------|--------------------------|
+| 27   | bassdrum     | CR-78 Bass (Songsterr ext.) |
+| 35   | bassdrum     | Bass Drum 2              |
+| 36   | bassdrum     | Bass Drum 1              |
+| 37   | sidestick    | Side Stick               |
+| 38   | acousticsnare| Acoustic Snare           |
+| 40   | acousticsnare| Electric Snare           |
+| 41   | lowfloortom  | Low Floor Tom            |
+| 42   | closedhihat  | Closed Hi-Hat            |
+| 43   | highfloortom | High Floor Tom           |
+| 44   | pedalhihat   | Pedal Hi-Hat             |
+| 45   | lowtom       | Low Tom                  |
+| 46   | openhihat    | Open Hi-Hat              |
+| 47   | tommh        | Hi-Mid Tom               |
+| 48   | tomfh        | High-Mid Tom             |
+| 49   | crashcymbal  | Crash Cymbal 1           |
+| 50   | lowmidtom    | High Tom                 |
+| 51   | ridecymbal   | Ride Cymbal 1            |
+| 53   | ridecymbal   | Ride Bell                |
+| 57   | crashcymbalb | Crash Cymbal 2           |
+| 92   | halfopenhihat| Half Open Hi-Hat (Songsterr ext.) |
+| 93   | ridecymbal   | Ride variant (Songsterr ext.) |
+| 97   | crashcymbal  | Crash (alt)              |
+| 98   | openhihat    | Open Hi-Hat (alt)        |
+
+(Full map in `parser.py`)
 
 ## LilyPond typesetting choices
 
 - Single voice, `\stemDown` — no phantom rests, crash+kick share one stem
-- `\numericTimeSignature` — shows `4/4` not `𝄼`
+- `\numericTimeSignature` — shows `4/4` not common-time symbol
 - `Beam.damping = +inf` — flat horizontal beams (standard in drum music)
 - `ragged-right` — systems not stretched to fill page width
 - Section breaks (`\break`) before sections with ≥ 3 measures
 - Bar numbers every 4 measures, also at every system start
-- Custom `drumStyleTable` — hi-hat above staff (position 5),
-  bass drum between lines 1 and 2 (position -3)
-- Grace notes always use `\acciaccatura` (never `\appoggiatura`)
-- `pedalhihat` + `bassdrum` on same beat: bass drum suppressed
+- Custom `drumStyleTable` — collision-free staff positions validated across 5 songs
 - No courtesy time signature at line ends
 - Letter paper, zero indent (no instrument name label)
 - Header: title, composer (artist), subtitle (drummer name)
 
 ## Songs tested successfully
 
-| Song               | Artist   | songId | partId | Notes                               |
-|--------------------|----------|--------|--------|-------------------------------------|
-| Gouge Away         | Pixies   | 15960  | 5      | v8, half open hi-hat                |
-| Wave of Mutilation | Pixies   | 16093  | 3      | v5, time sig changes, china cymbal  |
-| Slowly We Rot      | Obituary | 49310  | 5      | v8, blast beats, multi-tempo, flams |
-| Into the Fire      | Dokken   | 5829   | 6      | v8, floor tom, ride cymbal          |
+| Song                | Artist       | songId | partId | Notes                             |
+|---------------------|--------------|--------|--------|-----------------------------------|
+| Gouge Away          | Pixies       | 15960  | 5      | Simple 4/4, v8                    |
+| Wave of Mutilation  | Pixies       | 16093  | 3      | v5 format, time sig changes       |
+| Slowly We Rot       | Obituary     | 49310  | 4      | v8, blast beats, multi-tempo      |
+| Pneuma              | Tool         | 455388 | 8      | v8, complex time sigs, tuplets    |
+| Square Hammer       | Ghost        | 412647 | 9      | v8, pickup bar, ties              |
+| Smells Like Teen Spirit | Nirvana  | 269    | 5      | v8, 2-tom kit, half-open hi-hat   |
+| Money               | Pink Floyd   | 15761  | 9      | v8, 7/4, full tom descent         |
+| In the Air Tonight  | Phil Collins | 50420  | 9      | v8, 6-tom concert kit             |
+| Rosanna             | Toto         | 19993  | 18     | v8, ride bell, CR-78 bass (part 10)|
+
+## Known issues / not yet implemented
+
+- **CDN URL automation**: still requires manual DevTools for the CDN URL
+  (Milestone 5 — next to implement)
+- **Ties**: stored in IR, arc rendering validated for same-instrument ties.
+  Cross-instrument tie arcs are suppressed (correct behaviour).
+- **Repeats**: not seen in any song yet. Unknown encoding.
+- **Dynamics**: `velocity` field stored in IR but not emitted to LilyPond.
+- **`tripletFeel`**: `"8th"` and `"16th"` fields present in some songs
+  (Rosanna, Money) — ignored; low priority.
+- **YouTube sync**: `Score.youtube_id` / `Score.youtube_offset` fields exist
+  in the IR but are never populated (Milestone 6).
 
 ## Planned features
 
-- **CDN URL automation**: pass a Songsterr page URL directly —
-  no more DevTools fishing for the CDN URL.
+- **CDN URL automation**: `python main.py https://www.songsterr.com/...` works
+  without any DevTools (Milestone 5)
 - **Browser-based grid editor**: `python editor.py` opens a local web UI
   with a drum grid (rows = instruments, columns = 1/16 beats). Click to
   toggle hits, edit section markers, change time signatures, compile to PDF.
 - **Browser playback**: integrated into the editor. Uses Tone.js (Web Audio
   API) with a GM drumkit sample pack. Play/stop/loop controls with a
-  scrolling playhead. Timing derived from `Score.seconds_at()` so tempo
-  changes and odd time signatures are handled correctly. Accessible from
-  any browser on the local network.
+  scrolling playhead. Accessible from any browser on the local network.
 - **YouTube sync**: embed a YouTube player alongside the grid. Paste a
   YouTube URL and set a time offset (where beat 1 falls in the video).
-  Drum playback and video play in sync, with independent volume control
-  so the drum track can be louder than the video audio. Offset stored in
-  `Score.youtube_offset` (field already exists in the IR).
-
-- **Ride cymbal vs hi-hat**: `ridecymbal` and `closedhihat` share staff
-  position 5 — visually identical. Future fix: move ride to position 6.
-- **Half open hi-hat symbol**: renders as `xcircle` (same as open hi-hat).
-  LilyPond has no distinct built-in symbol for half-open vs fully open.
-- **crashcymbalb notehead**: renders hollow due to LilyPond internal
-  hardcoding. Position is correct; hollow vs solid is cosmetic only.
-- **Ties**: stored in IR but arc rendering not yet verified across all songs.
-- **Repeats**: not seen in any song yet.
-- **Dynamics**: `velocity` field stored in IR but not emitted to LilyPond.
-- **anacrusis**: supported in parser but not yet tested on a pickup-bar song.
-- **YouTube sync**: `Score.youtube_id` / `Score.youtube_offset` fields exist
-  but are never populated.
-- **Pneuma (Tool)**: not yet retested with current fixes.
+  Drum playback and video play in sync, with independent volume control.
+  Offset stored in `Score.youtube_offset` (field already exists in the IR).
