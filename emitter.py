@@ -20,6 +20,9 @@ from ir import Score
 # Minimum measures in a section to trigger a forced line break before it
 MIN_SECTION_MEASURES = 3
 
+# Maximum measures per system line (forced \break if exceeded)
+MAX_MEASURES_PER_LINE = 4
+
 # Duration table: exact Fraction of whole note -> LilyPond duration string
 _DURS = [
     (Fraction(1,  1), '1'),
@@ -418,6 +421,7 @@ def emit_lilypond(score: Score, version: str, drum_key: bool = True) -> str:
 
     section_lengths = _compute_section_lengths(score.measures)
     prev_sig = None
+    measures_on_line = 0  # tracks measures since last line break
 
     # FIX 2: Detect pickup bar and determine the main time signature.
     # If the first measure is a pickup, we suppress its \time directive and
@@ -434,6 +438,11 @@ def emit_lilypond(score: Score, version: str, drum_key: bool = True) -> str:
         if meas.marker and mi > 0:
             if section_lengths.get(mi, 0) >= MIN_SECTION_MEASURES:
                 voice_lines.append('  \\break')
+                measures_on_line = 0
+
+        # Also break every MAX_MEASURES_PER_LINE measures to avoid crowding
+        elif measures_on_line > 0 and measures_on_line % MAX_MEASURES_PER_LINE == 0:
+            voice_lines.append('  \\break')
 
         # FIX 2: For the pickup measure, emit \partial instead of \time.
         # For all other measures, emit \time only when the signature changes.
@@ -457,6 +466,7 @@ def emit_lilypond(score: Score, version: str, drum_key: bool = True) -> str:
 
         toks = _emit_measure(meas.events, meas.duration, meas.position)
         voice_lines.append(f'  {" ".join(toks)} | % m.{meas.index}')
+        measures_on_line += 1
 
     ts0 = f'{main_sig[0]}/{main_sig[1]}'
 
@@ -480,6 +490,7 @@ def emit_lilypond(score: Score, version: str, drum_key: bool = True) -> str:
         '  indent             = 0',
         '  short-indent       = 0',
         '  ragged-right       = ##f',
+        '  ragged-last        = ##t',
         '  ragged-last-bottom = ##f',
         '  system-system-spacing.basic-distance = #12',
         '  system-system-spacing.padding        = #2',
