@@ -10,3 +10,5 @@ __pycache__/
 # Update artifacts
 *.bak
 update_v*.zip
+
+diagnose*.py
