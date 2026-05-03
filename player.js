@@ -1,13 +1,18 @@
-// player.js — fetch the schedule, set up Tone.js synths, drive playback and UI.
+// player.js — fetch the schedule, set up Tone.js synths, drive playback,
+// fetch and inline LilyPond-rendered SVG pages, drive the UI.
 //
 // All audio timing comes from Tone.Transport; all UI state is derived from
 // Tone.Transport.seconds in a requestAnimationFrame loop. Scheduling is
 // done once, when the user first hits Play (Tone.start() requires a user
 // gesture for the AudioContext).
+//
+// Sheet music: SVG pages are fetched as text and inlined into the DOM so
+// (a) they style cleanly under our CSS, and (b) Milestone 6e can attach
+// click/highlight behaviour to individual <g class="NoteHead"> elements.
 
 'use strict';
 
-// ── Globals (intentional, not many) ──────────────────────────────────────────
+// ── Globals ──────────────────────────────────────────────────────────────────
 
 let SCHEDULE = null;          // the dict returned by /api/score
 let SYNTHS = null;            // built lazily on first Play
@@ -33,6 +38,8 @@ const elTempo = $('status-tempo');
 const elPosition = $('status-position');
 const elProgress = $('progress');
 const elError = $('error');
+const elSheet = $('sheet');
+const elSheetStatus = $('sheet-status');
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
 
@@ -57,15 +64,54 @@ async function init() {
   elBtnPlay.addEventListener('click', onPlay);
   elBtnPause.addEventListener('click', onPause);
   elBtnStop.addEventListener('click', onStop);
+
+  // Sheet music is not on the audio critical path; load it in parallel and
+  // let the user start playing as soon as the schedule is up.
+  loadSheetMusic(SCHEDULE.svg_pages || 0);
+}
+
+// ── Sheet music ──────────────────────────────────────────────────────────────
+
+async function loadSheetMusic(pageCount) {
+  if (pageCount <= 0) {
+    elSheetStatus.textContent =
+      'Sheet music not available (LilyPond compilation skipped or failed).';
+    return;
+  }
+
+  // Fetch all pages in parallel — they're independent, and most scores
+  // are 1–4 pages so the total payload is small.
+  let texts;
+  try {
+    const responses = await Promise.all(
+      Array.from({ length: pageCount }, (_, i) =>
+        fetch(`/svg/${i}`).then(r => {
+          if (!r.ok) throw new Error(`page ${i}: HTTP ${r.status}`);
+          return r.text();
+        })
+      )
+    );
+    texts = responses;
+  } catch (err) {
+    elSheetStatus.textContent = `Failed to load sheet music: ${err.message}`;
+    return;
+  }
+
+  // Replace the loading placeholder with the inlined SVG pages.
+  elSheet.innerHTML = '';
+  for (let i = 0; i < texts.length; i++) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'sheet-page';
+    wrapper.dataset.pageIndex = String(i);
+    // innerHTML on an SVG string is the simplest way to get it into the DOM
+    // as proper SVG nodes (rather than escaped text). The browser parses
+    // the <svg> root and creates the element tree.
+    wrapper.innerHTML = texts[i];
+    elSheet.appendChild(wrapper);
+  }
 }
 
 // ── Synth construction ───────────────────────────────────────────────────────
-
-// One synth per category. Drums rarely retrigger the same instrument fast
-// enough for cut-offs to be audible, and a single instance per category keeps
-// the audio graph small. If we hit a song that sounds wrong because of
-// retrigger cuts (rapid open-hat 32nds, double-stroke rolls), we'd switch to
-// a small per-category pool.
 
 function buildSynths() {
   const masterVol = new Tone.Volume(-6).toDestination();
@@ -115,28 +161,25 @@ function buildSynths() {
   };
 }
 
-// MIDI → category + per-category parameter (e.g. tom pitch).
-// Defaults err on the side of "play something audible" rather than silence
-// for unfamiliar MIDI values.
 function dispatch(midi) {
   switch (midi) {
     case 35: case 36:        return { synth: 'kick',      note: 'C1' };
     case 37:                 return { synth: 'sidestick', note: 'C4' };
     case 38: case 40:        return { synth: 'snare' };
-    case 39:                 return { synth: 'snare' };  // hand clap → snare-ish
-    case 41:                 return { synth: 'tom',  note: 'F1' };  // low floor
-    case 43:                 return { synth: 'tom',  note: 'A1' };  // high floor
-    case 45:                 return { synth: 'tom',  note: 'D2' };  // low
-    case 47:                 return { synth: 'tom',  note: 'F2' };  // hi-mid
-    case 48:                 return { synth: 'tom',  note: 'A2' };  // high-mid
-    case 50:                 return { synth: 'tom',  note: 'C3' };  // high
+    case 39:                 return { synth: 'snare' };
+    case 41:                 return { synth: 'tom',  note: 'F1' };
+    case 43:                 return { synth: 'tom',  note: 'A1' };
+    case 45:                 return { synth: 'tom',  note: 'D2' };
+    case 47:                 return { synth: 'tom',  note: 'F2' };
+    case 48:                 return { synth: 'tom',  note: 'A2' };
+    case 50:                 return { synth: 'tom',  note: 'C3' };
     case 42: case 44:        return { synth: 'hatClosed' };
     case 46:                 return { synth: 'hatOpen' };
-    case 92:                 return { synth: 'hatOpen' };  // half-open
+    case 92:                 return { synth: 'hatOpen' };
     case 49: case 57: case 52: case 55: case 59:
                              return { synth: 'crash' };
     case 51: case 53:        return { synth: 'ride' };
-    default:                 return { synth: 'snare' };  // unknown → audible fallback
+    default:                 return { synth: 'snare' };
   }
 }
 
@@ -144,7 +187,6 @@ function playDrum(midi, time) {
   const d = dispatch(midi);
   const synth = SYNTHS[d.synth];
   if (!synth) return;
-  // MembraneSynth/MetalSynth need a pitch; NoiseSynth ignores it.
   if (d.note) {
     synth.triggerAttackRelease(d.note, '8n', time);
   } else {
@@ -164,7 +206,6 @@ function scheduleAll() {
       for (const m of midiList) playDrum(m, audioTime);
     }, t);
   }
-  // Auto-stop just past the end so buttons reset.
   Tone.Transport.schedule(() => onStop(), SCHEDULE.total_seconds + 0.5);
   SCHEDULED = true;
 }
@@ -187,8 +228,6 @@ function onPause() {
   Tone.Transport.pause();
   elBtnPlay.disabled = false;
   elBtnPause.disabled = true;
-  // Stop button stays enabled so user can rewind.
-  // UI loop keeps reading Transport.seconds (which is frozen).
 }
 
 function onStop() {
@@ -201,7 +240,6 @@ function onStop() {
   MEASURE_INDEX = 0;
   if (RAF_ID) cancelAnimationFrame(RAF_ID);
   RAF_ID = null;
-  // Reset UI to bar 1.
   updateUi(0);
 }
 
@@ -217,9 +255,6 @@ function startUiLoop() {
 }
 
 function updateUi(t) {
-  // Advance MEASURE_INDEX and TEMPO_INDEX forward, but on rewind we want to
-  // search from scratch. Cheap fix: if t is less than the current marker,
-  // reset to 0. UI is frame-rate, so an extra full scan after Stop is fine.
   if (MEASURE_INDEX > 0 &&
       t < SCHEDULE.measures[MEASURE_INDEX].seconds_start) {
     MEASURE_INDEX = 0;

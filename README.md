@@ -1,221 +1,138 @@
-# Songsterr Drum Tab → PDF Pipeline
+# Songsterr drum-tab pipeline
 
-Fetches drum tab data from Songsterr's CDN, parses it into an internal
-representation (IR), caches it locally, and compiles it to a PDF score
-via LilyPond. Also provides browser-based playback of cached scores
-(Milestone 6a).
+Convert a Songsterr drum tab into a LilyPond-engraved PDF, or play it back
+in the browser with the engraved score visible alongside.
 
-## Pipeline
+## What this does
 
-```
-Songsterr page URL ─┐
-                    ├──▶  CDN URL  ──▶  Songsterr JSON (v5 or v8)  ──▶  Score IR  ↔  db/ cache
-CDN URL  ───────────┘                                                          │
-                                                                               ▼
-                                                                        score.ly  ──▶  LilyPond  ──▶  score.pdf
-                                                                               │
-                                                                               └──▶  player.py  ──▶  browser playback
-```
+Given either a Songsterr song-page URL or a CDN JSON URL, the pipeline
+walks the tab data, builds an intermediate representation (IR), caches
+it, and emits LilyPond source. From the same IR it can produce:
 
-The page-URL → CDN-URL step (Milestone 5) is handled by `cdn_resolver.py`.
-Browser playback (Milestone 6a) is handled by `player.py`.
+* a **PDF** (via `main.py`) — for printing or filing;
+* an **interactive browser player** (via `player.py`) — Tone.js synth
+  audio with the LilyPond-engraved sheet music shown on the same page.
 
-## Usage
+The PDF and the browser SVG are compiled from byte-identical .ly source,
+so what you hear and what you see match exactly.
 
-### PDF generation
+## Requirements
 
-```
-pip install requests
-python main.py <URL>                     # fetch, parse, compile to PDF
-python main.py <URL> --no-drum-key       # skip the Drum Key legend
-python main.py <URL> --with-breaks       # legacy layout: forced section breaks
-                                         # + every-4-measures (pre-v35)
-python main.py <URL> --probe             # diagnostic — dump what the resolver sees
-python main.py                           # list cached scores
+* Python 3.10+
+* LilyPond 2.24+ on the path, or set `LILYPOND_BIN` to its location
+* `pip install -r requirements.txt`
+
+On Windows, with LilyPond installed at `C:\LilyPond\lilypond-2.24.4\`:
+
+```cmd
+set LILYPOND_BIN=C:\LilyPond\lilypond-2.24.4\bin\lilypond.exe
 ```
 
-`<URL>` may be either a Songsterr page URL or a direct CDN URL:
+## CLI: PDF compilation (`main.py`)
 
 ```
-python main.py https://www.songsterr.com/a/wsa/pixies-wave-of-mutilation-drum-tab-s16093
-python main.py https://www.songsterr.com/a/wsa/...-drum-tab-s16093t3        # multi-track: explicit partId
-python main.py https://dqsljvtekg760.cloudfront.net/16093/418898/qE0QIyDkUuju6PtZ-Hg3I/3.json
+python main.py <songsterr-page-url-or-cdn-url>           # compile to PDF
+python main.py <url> --no-drum-key                       # suppress legend
+python main.py <url> --with-breaks                       # legacy section layout
 ```
 
-### Browser playback (Milestone 6a)
+The PDF lands in `scores/<Artist>_<Title>_drums.pdf` and the .ly source
+next to it.
+
+## CLI: browser player (`player.py`)
 
 ```
-python player.py <URL>                   # fetch+parse if not cached, then play
-python player.py <songId>_<partId>       # play a specific cached score
-python player.py <songId>                # play, if exactly one part is cached
-python player.py --list                  # list cached scores and exit
-python player.py <URL> --no-browser      # don't auto-open the browser
-python player.py <URL> --port 9000       # use a different port (default 8765)
+python player.py <songsterr-page-url-or-cdn-url>         # fetch+parse, play
+python player.py <songId>_<partId>                       # play cached score
+python player.py <songId>                                # play if 1 cached part
+python player.py --list                                  # list cached scores
 ```
 
-Opens a local UI at `http://127.0.0.1:8765/` with play/pause/stop, a bar
-counter, current time signature, current tempo, and a progress bar.
-Drum sounds are Tone.js synths, not samples — the audio is diagnostic
-(useful for ear-checking the parsed IR), not realistic. Press Ctrl+C
-in the terminal to stop the server.
+Flags:
 
-#### Layout — auto vs manual breaks (PDF)
+| Flag             | Effect                                                    |
+|------------------|-----------------------------------------------------------|
+| `--no-svg`       | skip LilyPond SVG compilation (fast startup, no score UI) |
+| `--no-drum-key`  | suppress the Drum Key legend in the rendered score        |
+| `--with-breaks`  | legacy section-aware layout (forced break every 4 bars)   |
+| `--no-browser`   | don't auto-open the browser                               |
+| `--port <N>`     | listen on `<N>` instead of 8765                           |
 
-Default (v35+): LilyPond decides line breaking based on page width, fitting
-as many measures per line as fit naturally. Produces compact scores.
+The server runs on `http://127.0.0.1:8765` and opens automatically. The
+page shows a dark control panel (Play / Pause / Stop, bar counter,
+section marker, time signature, tempo, progress bar) above a white sheet
+of LilyPond-engraved music.
 
-`--with-breaks` restores the pre-v35 behaviour: a forced `\break` before
-every section of ≥ 3 measures, plus a forced break after every 4 measures.
-Useful when you want every section on its own line(s) for readability.
+Press Ctrl+C in the terminal to stop the server.
 
-### When the page URL doesn't work
+### Caveats
 
-If Songsterr changes the internal JSON shape and the resolver fails:
-
-1. Run `python main.py <PAGE_URL> --probe` to see what each strategy found.
-2. As a fallback, grab the CDN URL the old way (DevTools → Network →
-   filter `cloudfront` → reload → copy the `<partId>.json` request URL)
-   and pass it directly. The pipeline accepts both forms forever.
-
-## CDN URL automation (Milestone 5)
-
-`cdn_resolver.resolve_cdn_url(page_url)` tries two strategies in order:
-
-1. **`/api/meta/{songId}`** (primary). Returns the latest-revision metadata
-   directly. Build the CDN URL from `revisionId` + `image` (the per-revision
-   token) + the drum track's `partId` (or its array-index, if the API
-   response omits the explicit field — Songsterr's frontend synthesises it
-   from the index).
-2. **Page HTML scrape via `curl`** (fallback). Songsterr embeds the same
-   data in `<script id="state" type="application/json">…</script>` on every
-   page; we extract `state.meta.current` and use the same logic. We use
-   `curl` rather than `requests` because Cloudflare's HTTP 103 Early Hints
-   in front of the page route is mishandled by Python's HTTP libraries.
-
-If the URL contains a `t<partId>` suffix (e.g. `...s16093t3`), that hint
-overrides drum-track auto-detection — useful for multi-drummer songs.
+* Drum sounds are Tone.js synthesisers, not samples — diagnostic, not
+  realistic. Sample-based playback is on the roadmap (Milestone 6d).
+* SVG compilation costs ~1–3 s per startup. Use `--no-svg` to skip.
+* LilyPond's SVG output does not embed text fonts; tempo numbers and
+  bar labels render in the browser's default font. Music glyphs (note-
+  heads, beams, clefs) are full vector — pixel-identical to the PDF.
 
 ## Project structure
 
 ```
-main.py             CLI entry point (--no-drum-key, --with-breaks, --probe)
-pipeline.py         fetch_and_parse(), compile_to_pdf(), run_pipeline()
-cdn_resolver.py     resolve_cdn_url(), probe_page(), URL classifiers
-lilypond_utils.py   auto-detect LilyPond binary + version
-ir.py               Score / Measure / Event / DrumNote / TempoChange dataclasses
-parser.py           parse_json() — handles Songsterr JSON v5 and v8
-cache.py            save_score() / load_score() / list_cached() / score_to_dict()
-emitter.py          emit_lilypond() — Score IR → LilyPond source
-player.py           local web server: browser playback of cached scores (M6a)
-player.html         playback UI (single page, loads Tone.js from cdnjs)
-player.js           Tone.js scheduling + synth dispatch + UI loop
-apply_update.py     permanent: applies update_vN.zip, backs up old files
-flush_cache.py      permanent: deletes all cached score JSONs from db/
-db/                 local JSON cache (gitignored)
-scores/             output PDFs and .ly files (gitignored)
+.
+├── ir.py            IR dataclasses (Score, Measure, Event, DrumNote, TempoChange)
+├── parser.py        Songsterr JSON → IR
+├── cache.py         IR persistence to db/<songId>_<partId>.json
+├── emitter.py       IR → LilyPond source
+├── lilypond_utils.py LilyPond binary discovery and version probe
+├── cdn_resolver.py  Songsterr page URL → CDN JSON URL (M5)
+├── pipeline.py      orchestrator: fetch_and_parse, compile_to_pdf, compile_to_svg
+├── main.py          PDF CLI
+├── player.py        browser-player HTTP server (M6a/6b)
+├── player.html      player UI: dark controls + light sheet-music panel
+├── player.js        Tone.js scheduling, UI loop, SVG fetch+inline
+├── apply_update.py  apply update_vN.zip with backups
+├── flush_cache.py   wipe db/
+├── requirements.txt
+├── db/              cached IR JSON, gitignored
+└── scores/          generated .ly, .pdf, .svg, gitignored
 ```
 
-## Dependencies
+## How it works (pipeline)
 
-* Python 3.10+
-* `requests` (`pip install requests`)
-* LilyPond 2.24+ — <https://lilypond.org/download.html>
-* `curl` on PATH (only used by the resolver's Strategy B fallback;
-  Windows 10+ ships with it)
-* Modern browser (for `player.py`) — uses Tone.js loaded from cdnjs, no
-  bundler or local install needed.
+1. `fetch_and_parse(url)` — accepts a CDN URL or page URL. Page URLs go
+   through `cdn_resolver.resolve_cdn_url()` first. Returns a `Score`
+   IR, caching to `db/<songId>_<partId>.json` on first fetch.
+2. `compile_to_pdf(score)` or `compile_to_svg(score)` — both call the
+   shared `_emit_ly_file()` helper to produce a single .ly file, then
+   invoke LilyPond. PDF mode uses the default backend; SVG mode uses
+   `-dbackend=svg -dno-point-and-click` (not the Cairo backend, which
+   would block forward compatibility with Milestone 6c).
+3. `player.py` precomputes a JSON-clean schedule with `seconds_at()`
+   for every event, sends it to the browser, and serves SVG pages on
+   `/svg/<i>`.
 
-LilyPond is auto-detected: `LILYPOND_BIN` env var → known platform paths → PATH.
+## Testing
 
-## Songsterr JSON formats
+```
+python test_player_smoke.py      # 6 build_schedule tests
+python test_player_http.py       # 3 HTTP layer tests
+python test_v37_svg.py           # 7 SVG-specific tests
+```
 
-**Version 8** (newer): `fret` = GM MIDI number, `string` = canvas position (ignored),
-grace notes via `beat["graceNote"]`, tempo in `automations.tempo`.
+All 16 tests should pass without LilyPond installed (LilyPond is mocked
+in the SVG tests).
 
-**Version 5** (older): same `fret`, inline tempo via `beat["tempo"]["bpm"]`,
-grace notes via `note["grace"] = true`, measures have `"index"` field.
+## Roadmap
 
-## GM Drum Map (key entries)
+| Milestone | Status   | Description                                    |
+|-----------|----------|------------------------------------------------|
+| 1–5       | done     | IR, parser, emitter, cache, CDN resolution    |
+| 6a        | done     | Browser playback (synth audio)                |
+| 6b        | done     | LilyPond SVG sheet music in player            |
+| 6c        | next     | Playback cursor highlighting current notehead |
+| 6d        | optional | Sample-based playback                         |
+| 6e        | planned  | Editing surface (note clicks or grid)         |
+| 6f        | planned  | Structural edits                              |
+| 6g        | planned  | YouTube playback sync                         |
+| 7         | planned  | Notation polish (tie arcs, dynamics)          |
 
-| MIDI | LilyPond name | Description | Staff pos |
-| --- | --- | --- | --- |
-| 36 | bassdrum | Bass Drum | -5 |
-| 37 | sidestick | Side Stick | -2 |
-| 38 | acousticsnare | Snare | +1 |
-| 41 | lowfloortom | Low Floor Tom | -4 |
-| 42 | closedhihat | Closed Hi-Hat | +5 |
-| 43 | highfloortom | High Floor Tom | -3 |
-| 44 | pedalhihat | Pedal Hi-Hat | -5 |
-| 45 | lowtom | Low Tom | -1 |
-| 46 | openhihat | Open Hi-Hat | +5 (xcircle) |
-| 47 | tommh | Hi-Mid Tom | +2 |
-| 48 | hightom | High-Mid Tom | +3 |
-| 49 | crashcymbal | Crash Cymbal 1 | +7 |
-| 50 | hightom | High Tom | +3 |
-| 51 | ridecymbal | Ride Cymbal 1 | +4 |
-| 53 | ridebell | Ride Bell | +4 |
-| 57 | crashcymbalb | Crash Cymbal 2 | +6 |
-| 92 | halfopenhihat | Half Open Hi-Hat | +5 (xcircle) |
-
-## LilyPond typesetting choices
-
-* Single voice, `\stemDown` — no phantom rests
-* `\numericTimeSignature`, flat horizontal beams (`Beam.damping = +inf`)
-* Bar numbers every 4 measures + every system start
-* **Drum Key legend** appended by default (suppress with `--no-drum-key`):
-  shows one labeled notehead per instrument used, top→bottom on staff
-* **Auto-layout** by default: LilyPond chooses line breaks
-  (use `--with-breaks` for the legacy section-aware layout)
-
-## Browser playback synth choices (Milestone 6a)
-
-| Drum category | MIDI | Tone.js synth | Notes |
-| --- | --- | --- | --- |
-| Kick | 35, 36 | MembraneSynth (C1) | low fundamental, fast pitch decay |
-| Snare | 38, 40 | NoiseSynth + 2.2 kHz HP | white noise burst |
-| Sidestick | 37 | MembraneSynth (C4) | very short click |
-| Closed hat | 42, 44 | NoiseSynth + 7 kHz HP | very short envelope |
-| Open hat | 46, 92 | NoiseSynth + 6 kHz HP | longer decay |
-| Toms | 41–50 | MembraneSynth, varying pitch | F1 (low floor) → C3 (high) |
-| Crash | 49, 52, 55, 57, 59 | MetalSynth | bright, long decay |
-| Ride | 51, 53 | MetalSynth | brighter, shorter than crash |
-
-Synthesised, not sampled. Audio is diagnostic, not realistic.
-
-## Songs tested
-
-| Song | Artist | songId | partId |
-| --- | --- | --- | --- |
-| Gouge Away | Pixies | 15960 | 5 |
-| Wave of Mutilation | Pixies | 16093 | 3 |
-| Slowly We Rot | Obituary | 49310 | 4 |
-| Pneuma | Tool | 455388 | 8 |
-| Square Hammer | Ghost | 412647 | 9 |
-| Smells Like Teen Spirit | Nirvana | 269 | 5 |
-| Money | Pink Floyd | 15761 | 9 |
-| In the Air Tonight | Phil Collins | 50420 | 9 |
-| Rosanna | Toto | 19993 | 18 |
-| Eye of the Tiger | Survivor | 89089 | 8 |
-
-## Known issues / not yet implemented
-
-* **Ties**: stored in IR, validated for same-instrument; arcs not yet emitted
-* **Dynamics**: `velocity` stored in IR but not emitted to LilyPond, ignored in playback
-* **`tripletFeel`**: present in Rosanna/Money JSON, ignored (low priority)
-* **Tempo ramps** (`TempoChange.linear`): stored, not honoured by `seconds_at`;
-  ignored in both PDF and playback. Step-tempo only.
-* **YouTube sync**: IR fields exist but not populated (Milestone 6e)
-* **Playback realism**: synth-only; no sample kit option (Milestone 6 follow-up if needed)
-
-## Planned features
-
-* **Milestone 6b**: Read-only grid viewer (IR → instrument-row grid in browser)
-* **Milestone 6c**: Hit toggling + recompile (first write path)
-* **Milestone 6d**: Structural edits (sections, time sigs, measure insert/delete, tempos)
-* **Milestone 6e**: YouTube sync — embedded player + playhead synchronisation
-* **Milestone 7**: Tie arcs, dynamics, notation polish
-
-## About
-
-Produce high-quality drum tabs using LilyPond based on Songsterr data,
-plus browser-based playback of the parsed scores.
+See [`LOGBOOK.md`](LOGBOOK.md) for the detailed history.

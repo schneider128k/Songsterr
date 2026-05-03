@@ -8,11 +8,13 @@
     :root {
       --bg: #0f1115;
       --panel: #1a1d24;
+      --paper: #ffffff;
+      --paper-rule: #e6e6e6;
+      --paper-ink: #1a1a1a;
       --fg: #e6e6e6;
       --muted: #9aa0a6;
       --accent: #ffb454;
       --accent-dim: #6f5320;
-      --good: #4ade80;
       --warn: #f87171;
     }
     * { box-sizing: border-box; }
@@ -22,17 +24,21 @@
       color: var(--fg);
       font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
+      padding: 24px 16px;
     }
+    .layout {
+      max-width: 960px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ── Control panel (dark) ─────────────────────────────────────────── */
     .panel {
       background: var(--panel);
       border-radius: 12px;
-      padding: 32px 40px;
-      width: 100%;
-      max-width: 560px;
+      padding: 24px 32px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.4);
     }
     h1 {
@@ -44,12 +50,12 @@
     .artist {
       color: var(--muted);
       font-size: 14px;
-      margin-bottom: 24px;
+      margin-bottom: 20px;
     }
     .controls {
       display: flex;
       gap: 8px;
-      margin-bottom: 24px;
+      margin-bottom: 20px;
     }
     button {
       flex: 1;
@@ -82,22 +88,21 @@
     }
     .status {
       font-family: ui-monospace, "SF Mono", Consolas, monospace;
-      font-size: 14px;
+      font-size: 13px;
       line-height: 1.7;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 4px 24px;
     }
     .status .row {
       display: flex;
       justify-content: space-between;
       border-bottom: 1px solid #2a2e38;
-      padding: 6px 0;
+      padding: 4px 0;
     }
-    .status .row:last-child { border-bottom: none; }
     .status .label { color: var(--muted); }
     .status .value { color: var(--fg); font-variant-numeric: tabular-nums; }
-    .marker {
-      color: var(--accent);
-      font-weight: 500;
-    }
+    .marker { color: var(--accent); font-weight: 500; }
     .progress {
       margin-top: 16px;
       height: 4px;
@@ -111,60 +116,106 @@
       width: 0%;
       transition: width 0.05s linear;
     }
-    .footer {
+
+    /* ── Sheet music panel (light "paper") ────────────────────────────── */
+    .sheet {
+      background: var(--paper);
+      color: var(--paper-ink);
+      border-radius: 12px;
+      padding: 32px 32px 24px 32px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+      min-height: 240px;
+      position: relative;
+    }
+    .sheet-status {
+      color: #777;
+      font-size: 14px;
+      text-align: center;
+      padding: 80px 0;
+    }
+    .sheet-page {
+      width: 100%;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .sheet-page + .sheet-page {
       margin-top: 24px;
+      border-top: 1px solid var(--paper-rule);
+      padding-top: 24px;
+    }
+    /* LilyPond SVGs come with their own width/height; let them scale to fit. */
+    .sheet-page svg {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      margin: 0 auto;
+    }
+
+    /* ── Footer / errors ──────────────────────────────────────────────── */
+    .footer {
       font-size: 12px;
       color: var(--muted);
       line-height: 1.5;
+      text-align: center;
     }
     .error {
       color: var(--warn);
-      margin-top: 12px;
       font-size: 13px;
+      text-align: center;
     }
+    .error:empty { display: none; }
   </style>
 </head>
 <body>
-  <div class="panel">
-    <h1 id="title">Loading…</h1>
-    <div class="artist" id="artist">&nbsp;</div>
+  <div class="layout">
 
-    <div class="controls">
-      <button id="btn-play" class="primary" disabled>▶ Play</button>
-      <button id="btn-pause" disabled>⏸ Pause</button>
-      <button id="btn-stop" disabled>⏹ Stop</button>
+    <!-- Controls (dark) -->
+    <div class="panel">
+      <h1 id="title">Loading…</h1>
+      <div class="artist" id="artist">&nbsp;</div>
+
+      <div class="controls">
+        <button id="btn-play" class="primary" disabled>▶ Play</button>
+        <button id="btn-pause" disabled>⏸ Pause</button>
+        <button id="btn-stop" disabled>⏹ Stop</button>
+      </div>
+
+      <div class="status">
+        <div class="row">
+          <span class="label">Bar</span>
+          <span class="value" id="status-bar">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Section</span>
+          <span class="value marker" id="status-marker">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Time signature</span>
+          <span class="value" id="status-timesig">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Tempo</span>
+          <span class="value" id="status-tempo">—</span>
+        </div>
+        <div class="row">
+          <span class="label">Position</span>
+          <span class="value" id="status-position">0:00 / 0:00</span>
+        </div>
+      </div>
+
+      <div class="progress">
+        <div class="progress-fill" id="progress"></div>
+      </div>
     </div>
 
-    <div class="status">
-      <div class="row">
-        <span class="label">Bar</span>
-        <span class="value" id="status-bar">—</span>
-      </div>
-      <div class="row">
-        <span class="label">Section</span>
-        <span class="value marker" id="status-marker">—</span>
-      </div>
-      <div class="row">
-        <span class="label">Time signature</span>
-        <span class="value" id="status-timesig">—</span>
-      </div>
-      <div class="row">
-        <span class="label">Tempo</span>
-        <span class="value" id="status-tempo">—</span>
-      </div>
-      <div class="row">
-        <span class="label">Position</span>
-        <span class="value" id="status-position">0:00 / 0:00</span>
-      </div>
-    </div>
-
-    <div class="progress">
-      <div class="progress-fill" id="progress"></div>
+    <!-- Sheet music (light) -->
+    <div class="sheet" id="sheet">
+      <div class="sheet-status" id="sheet-status">Loading sheet music…</div>
     </div>
 
     <div class="footer">
-      Synth-only playback — kicks/snares/hats/toms/cymbals are Tone.js
-      synths, not samples. Sound is diagnostic, not realistic.
+      Synth-only playback — drum sounds are Tone.js synths, not samples.
+      Sheet music engraved by LilyPond.
     </div>
 
     <div class="error" id="error"></div>

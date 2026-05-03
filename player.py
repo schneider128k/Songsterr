@@ -1,13 +1,15 @@
 """
-player.py — browser-based playback for cached drum scores via Tone.js.
+player.py — browser-based playback for cached drum scores via Tone.js,
+            with sheet music rendered alongside via LilyPond SVG (M6b).
 
 Reads a Score IR (cached or freshly fetched), precomputes a wall-clock
-schedule, and serves a single-page UI that synthesises the drum part in
-the browser using Tone.js.
+schedule, compiles the score to SVG via LilyPond, and serves a
+single-page UI that synthesises the drum part in the browser using
+Tone.js while displaying the engraved score above the controls.
 
 This is read-only: the IR is not modified. Purpose is twofold —
-(a) ear-check the parsed IR (audible bugs are louder than visual ones)
-and (b) MVP for the Milestone 6 browser tooling.
+(a) ear-and-eye-check the parsed IR (audible AND visible bugs)
+and (b) MVP for Milestone 6 browser tooling.
 
 Usage
 -----
@@ -16,6 +18,9 @@ Usage
     python player.py <songId>_<partId>        # play a specific cached score
     python player.py <songId>                 # play, if exactly one part is cached
     python player.py --list                   # list cached scores and exit
+
+    Add --no-svg to skip the LilyPond SVG compilation (faster startup,
+    no sheet music in the UI).
 
 Server runs on http://127.0.0.1:8765 by default. The browser opens
 automatically. Press Ctrl+C in the terminal to stop.
@@ -36,7 +41,7 @@ from typing import Optional
 import cache
 from cache import load_score
 from ir import Score
-from pipeline import fetch_and_parse
+from pipeline import fetch_and_parse, compile_to_svg
 
 
 HOST = '127.0.0.1'
@@ -46,7 +51,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ── Schedule construction ─────────────────────────────────────────────────────
 
-def build_schedule(score: Score) -> dict:
+def build_schedule(score: Score, svg_pages: int = 0) -> dict:
     """
     Walk the IR once and produce a JSON-clean dict the browser can play.
 
@@ -56,10 +61,15 @@ def build_schedule(score: Score) -> dict:
     time. This is intentional: the browser's job is purely audio
     scheduling, not music theory.
 
+    `svg_pages` is the count of LilyPond-compiled SVG pages available at
+    /svg/<i> for i in [0, svg_pages). Zero means no sheet music
+    (compilation skipped or failed).
+
     Output schema:
         {
           'title', 'artist', 'song_id', 'part_id',
           'total_seconds': float,
+          'svg_pages': int,
           'events':   [{'seconds': float, 'midi': [int, ...], 'grace_v8': bool}, ...],
           'measures': [{'index': int, 'seconds_start': float,
                         'time_sig': [num, den], 'marker': str | None}, ...],
@@ -70,18 +80,10 @@ def build_schedule(score: Score) -> dict:
     for measure in score.measures:
         for ev in measure.events:
             if not ev.notes:
-                # Pure rest — nothing to play. The bar counter still
-                # advances because it keys off Tone.Transport.seconds,
-                # not off our event list.
                 continue
             events.append({
                 'seconds': score.seconds_at(ev.position),
                 'midi': [n.midi for n in ev.notes],
-                # grace_v8 = True means the parser flagged this as a v8
-                # acciaccatura ornament. Browser may apply a small
-                # negative offset so it sounds before the beat. v5 flams
-                # already have real durations; their position is the
-                # correct sounding time as-is.
                 'grace_v8': bool(ev.grace and ev.grace_is_v8),
             })
 
@@ -113,6 +115,7 @@ def build_schedule(score: Score) -> dict:
         'song_id': score.song_id,
         'part_id': score.part_id,
         'total_seconds': total_seconds,
+        'svg_pages': svg_pages,
         'events': events,
         'measures': measures,
         'tempos': tempos,
@@ -169,6 +172,7 @@ def resolve_target(arg: str) -> Score:
 class PlayerHandler(BaseHTTPRequestHandler):
     """One score per server instance — set on the class before serving."""
     schedule_json: bytes = b'{}'
+    svg_pages: list[str] = []  # absolute filesystem paths, in page order
 
     def _send(self, status: int, content_type: str, body: bytes,
               cache_control: str = 'no-store') -> None:
@@ -190,7 +194,6 @@ class PlayerHandler(BaseHTTPRequestHandler):
         self._send(200, content_type, body)
 
     def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
-        # Strip query string — we don't use it.
         path = self.path.split('?', 1)[0]
 
         if path == '/' or path == '/index.html':
@@ -202,18 +205,36 @@ class PlayerHandler(BaseHTTPRequestHandler):
         elif path == '/api/score':
             self._send(200, 'application/json; charset=utf-8',
                        PlayerHandler.schedule_json)
+        elif path.startswith('/svg/'):
+            tail = path[len('/svg/'):]
+            try:
+                idx = int(tail)
+            except ValueError:
+                self._send(404, 'text/plain; charset=utf-8',
+                           b'Bad SVG index')
+                return
+            if 0 <= idx < len(PlayerHandler.svg_pages):
+                # image/svg+xml is the registered media type. The charset
+                # matters because LilyPond's SVG includes UTF-8 (e.g. the
+                # ♩ glyph in tempo markings).
+                self._send_file(PlayerHandler.svg_pages[idx],
+                                'image/svg+xml; charset=utf-8')
+            else:
+                self._send(404, 'text/plain; charset=utf-8',
+                           f'No SVG page {idx}'.encode('utf-8'))
         else:
             self._send(404, 'text/plain; charset=utf-8',
                        f'Not found: {path}'.encode('utf-8'))
 
     def log_message(self, fmt: str, *args) -> None:
-        # Quieter than the default — one line per request, no IP.
         sys.stderr.write(f'  {fmt % args}\n')
 
 
-def serve(schedule: dict, host: str = HOST, port: int = PORT,
+def serve(schedule: dict, svg_pages: list[str],
+          host: str = HOST, port: int = PORT,
           open_browser: bool = True) -> None:
     PlayerHandler.schedule_json = json.dumps(schedule).encode('utf-8')
+    PlayerHandler.svg_pages = svg_pages
     server = ThreadingHTTPServer((host, port), PlayerHandler)
 
     url = f'http://{host}:{port}/'
@@ -222,10 +243,11 @@ def serve(schedule: dict, host: str = HOST, port: int = PORT,
     print(f'  Length: {schedule["total_seconds"]:.1f} s '
           f'({len(schedule["events"])} events, '
           f'{len(schedule["measures"])} measures)')
+    print(f'  Sheet : {len(svg_pages)} SVG page(s)'
+          if svg_pages else '  Sheet : (none)')
     print('Press Ctrl+C to stop.\n')
 
     if open_browser:
-        # Defer so the server is actually listening when the browser hits it.
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
 
     try:
@@ -239,7 +261,8 @@ def serve(schedule: dict, host: str = HOST, port: int = PORT,
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='Browser playback for cached drum scores.')
+        description='Browser playback for cached drum scores, with '
+                    'LilyPond-rendered sheet music.')
     parser.add_argument(
         'target', nargs='?',
         help='Songsterr URL, <songId>_<partId>, or <songId>.')
@@ -249,6 +272,16 @@ def main() -> None:
     parser.add_argument(
         '--no-browser', action='store_true',
         help='Do not auto-open the browser.')
+    parser.add_argument(
+        '--no-svg', action='store_true',
+        help='Skip LilyPond SVG compilation (faster startup, no sheet music).')
+    parser.add_argument(
+        '--no-drum-key', action='store_true',
+        help='Suppress the Drum Key legend in the rendered score.')
+    parser.add_argument(
+        '--with-breaks', action='store_true',
+        help='Use the legacy section-aware layout (forced \\break every 4 '
+             'measures + section breaks). Default is auto layout.')
     parser.add_argument(
         '--port', type=int, default=PORT,
         help=f'HTTP port (default {PORT}).')
@@ -263,8 +296,25 @@ def main() -> None:
         sys.exit(1)
 
     score = resolve_target(args.target)
-    schedule = build_schedule(score)
-    serve(schedule, port=args.port, open_browser=not args.no_browser)
+
+    # Compile SVG before starting the server so the page-count is known
+    # when the browser asks for /api/score. If compilation fails we still
+    # serve playback — sheet music is a feature, not a hard requirement.
+    svg_pages: list[str] = []
+    if not args.no_svg:
+        try:
+            svg_pages = compile_to_svg(
+                score,
+                drum_key=not args.no_drum_key,
+                auto_layout=not args.with_breaks,
+            )
+        except Exception as exc:
+            print(f'\nWARNING: SVG compilation failed — {exc}')
+            print('         Continuing without sheet music.\n')
+
+    schedule = build_schedule(score, svg_pages=len(svg_pages))
+    serve(schedule, svg_pages,
+          port=args.port, open_browser=not args.no_browser)
 
 
 if __name__ == '__main__':

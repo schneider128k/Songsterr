@@ -100,67 +100,31 @@ that v34 had assumed were equivalent:
   hydrates the page state.
 
 v34's resolver returned `None` from `_build_cdn_url_from_meta` when the drum
-track had no `partId`, forcing fallback to Strategy B — which worked but is
-slower (subprocess + HTML parse). v35 mirrors the frontend's behaviour: a
-new `_track_part_id(track, index)` helper returns the explicit partId if
-present, otherwise the array index. Strategy A now succeeds on songs in
-either shape.
+track had no `partId`, forcing fallback to Strategy B. v35 mirrors the
+frontend's behaviour: a new `_track_part_id(track, index)` helper returns
+the explicit partId if present, otherwise the array index.
 
 ### Bug 2: v8 acciaccatura duplicate-note emission
 
-Eye of the Tiger triggered 6 bar-check warnings (LilyPond reporting the bar
-overflowed by 1/64, 1/32, 3/64, 1/16, 5/64, 3/32 in different measures).
-Tracing m.38 through the IR:
+Eye of the Tiger triggered 6 bar-check warnings. Tracing m.38: the v8 grace
+event has duration 1/64, which the cursor logic correctly skipped, but
+`_event_to_token` for `grace_type='before'` always emitted both the
+`\acciaccatura { ... }` prefix AND a real note of `ev.duration` length —
+the same fix v32 applied to `'on'` was never carried over to `'before'`.
 
-```
-events: 6 × 1/8 (regular hits) + grace[1/64] + 1/4 (final hit)
-expected bar duration: 1
-```
-
-The grace event has duration 1/64 — Songsterr's v8 representation marks pure
-ornaments with a "near-zero" duration the emitter must NOT advance through.
-`_emit_measure` already had this logic for cursor management
-(`GRACE_DUR_THRESHOLD = 1/32`).
-
-But `_event_to_token` for `grace_type='before'` always emitted both the
-`\acciaccatura { ... }` prefix AND a real note of `ev.duration` length.
-The same fix v32 applied to `grace_type='on'` (emit only the prefix, no
-duplicate note) was never carried over to the `'before'` case.
-
-v35: `_event_to_token` now distinguishes v5 flam (real duration → grace +
-real note, the original behaviour) from v8 acciaccatura (near-zero
-duration → grace only). Threshold is the same `V8_GRACE_DUR_THRESHOLD =
-1/32` shared with `_emit_measure` so the two stay consistent.
-
-End-to-end check: re-emitting Eye of the Tiger from the cached IR with v35
-produces a clean .ly with no acciaccatura/duplicate-small-note pattern in
-any of the 6 previously-warning measures.
+v35: `_event_to_token` distinguishes v5 flam (real duration → grace + real
+note) from v8 acciaccatura (near-zero duration → grace only) at the
+shared `V8_GRACE_DUR_THRESHOLD = 1/32`.
 
 ### Layout: auto_layout default
 
-User feedback: the v32 layout (forced `\break` every 4 measures plus
-section breaks) was producing scores too long to be useful — multiple
-nearly-empty lines and visible "stubs" at the end of each forced break.
-
-v35: `emit_lilypond` gains an `auto_layout: bool = True` parameter. When
-`True` (default), no `\break` is emitted and LilyPond decides line-breaking
-based on page width. This produces compact output that fills each line
-naturally.
-
-When `False`, the v32 behaviour is restored (section breaks ≥ 3 measures,
-break every 4 measures). Available via `python main.py <URL> --with-breaks`.
-
-The "stub at end of line" the user observed was an artifact of the forced
-`\break`: with `ragged-right = ##t` and a forced break, the staff is drawn
-to its content width plus a small terminating segment. Without forced
-breaks, LilyPond chooses break points where the staff fills the line, and
-the artifact disappears.
+`emit_lilypond` gains `auto_layout: bool = True`. Default produces compact
+output that fills page width naturally. `--with-breaks` restores the v32
+section-aware behaviour.
 
 ### Validation
 
-* 18 offline tests (test_v35.py): emitter auto_layout flag both ways,
-  v8/v5 grace distinction at the 1/32 threshold, m.38 bar-duration
-  regression, partId-from-index fallback, explicit-partId precedence.
+* 18 offline tests (test_v35.py).
 * End-to-end re-emit of Eye of the Tiger from cached IR: 0 forced breaks
   with auto_layout=True (vs 29 with auto_layout=False); no duplicate-note
   pattern in any of the 6 previously-warning measures.
@@ -171,16 +135,7 @@ the artifact disappears.
 
 ### Files changed in v35
 
-* `emitter.py` — auto_layout param + V8_GRACE_DUR_THRESHOLD constant +
-  acciaccatura/flam distinction in `_event_to_token`
-* `pipeline.py` — auto_layout pass-through to compile_to_pdf
-* `main.py` — `--with-breaks` flag
-* `cdn_resolver.py` — `_track_part_id` helper, used by `_find_drum_track`
-  and `_build_cdn_url_from_meta`
-
-`ir.py`, `parser.py`, `cache.py`, `lilypond_utils.py`, `apply_update.py`,
-`flush_cache.py` are unchanged. **Cache flush not required** — IR layout
-unchanged.
+* `emitter.py`, `pipeline.py`, `main.py`, `cdn_resolver.py`.
 
 ---
 
@@ -188,125 +143,203 @@ unchanged.
 
 First Milestone 6 deliverable: read-only browser playback of any cached
 score, intended both as a standalone listening tool and as an audible
-audit of the parsed IR. The structure for editor work (server, schedule,
-synth dispatch) is in place but no editing surface is exposed.
+audit of the parsed IR.
 
-### Sub-milestone ordering
+### Architecture
 
-Milestone 6 was originally listed as a single deliverable (grid editor +
-Tone.js playback + YouTube sync). It is split into five sub-milestones
-to avoid the "ship everything, validate nothing" pattern that produced
-v33:
+* `python player.py <target>` resolves URL / `<songId>_<partId>` / `<songId>`,
+  loads via `pipeline.fetch_and_parse()` or `cache.load_score()`, builds
+  a flat schedule, serves a single-page UI from `http.server`.
+* Schedule walks IR once, calls `Score.seconds_at()` for each event,
+  outputs `{seconds, midi: [int, ...], grace_v8: bool}`. Fractions never
+  reach the browser.
+* Browser uses Tone.js 14.8 from cdnjs. One synth per category (kick,
+  snare, sidestick, hatClosed, hatOpen, tom, crash, ride). Synth-based,
+  not sampled — diagnostic, not realistic.
+* v8 acciaccaturas (`grace_v8: true`) scheduled 30 ms early so they
+  sound before the beat.
 
-* **6a — Browser playback (this update).** Read-only, synth-based.
-* **6b — Read-only grid viewer.** IR rendered as instrument-row grid.
-* **6c — Hit toggling + recompile.** First write path: toggle cells,
-  save modified IR, run the existing PDF pipeline.
-* **6d — Structural edits.** Section markers, time signature changes,
-  insert/delete measure, tempo changes.
-* **6e — YouTube sync.** Embedded player + playhead synchronised with
-  the score timeline.
+### Validation (v36)
 
-Playback first because (a) it is a useful artefact on its own,
-(b) it doubles as an IR audit (audible bugs are louder than visual
-ones), and (c) the data path is read-only — no persistence, no
-inverse serialisation.
+* 6 offline `build_schedule` tests + 3 HTTP-layer tests, all pass.
+* **Live test on Windows: confirmed.** *Wave of Mutilation* through its
+  four time signatures (1/4, 4/4, 6/4, 2/4); *Eye of the Tiger* via
+  Strategy A fresh-fetch; bar counter, time signature, and tempo display
+  track correctly during playback.
+
+### Files added in v36
+
+`player.py`, `player.html`, `player.js`. `ir.py`, `parser.py`, `cache.py`,
+`emitter.py`, `pipeline.py`, `main.py`, `cdn_resolver.py`,
+`lilypond_utils.py`, `apply_update.py`, `flush_cache.py` unchanged.
+
+---
+
+## Milestone 6b — Sheet music in the browser (completed, update v37)
+
+Second Milestone 6 deliverable: render the LilyPond-engraved score as
+SVG and display it in the player UI, alongside the existing playback
+controls. The user can now hear and see the score simultaneously.
+
+### Why LilyPond SVG (not AlphaTab / VexFlow / OSMD)
+
+LilyPond's own SVG backend reuses 100% of the existing engraving logic —
+including all v35 fixes (acciaccatura/flam distinction, drum positions,
+tie validation, the Drum Key legend). The on-screen score is byte-equal
+to the PDF a user would print.
+
+The alternatives (AlphaTab, VexFlow, OpenSheetMusicDisplay) would each
+require a new IR-to-format emitter, re-deriving the bug fixes that the
+LilyPond emitter has accumulated. Net effort: significantly larger; net
+quality: no better than LilyPond's. Deferred.
+
+### Why `-dbackend=svg` (not `-dbackend=cairo`)
+
+LilyPond 2.24 ships two SVG backends. The Cairo backend produces nicer
+SVG and is faster, but doesn't yet support the `output-attributes`
+property — the mechanism for tagging individual noteheads with stable
+IDs/classes for future JS interactivity (Milestone 6c, playback cursor).
+We accept slightly less polished SVG today to keep that door open.
 
 ### Architecture
 
 ```
 python player.py <target>
-  ├── resolve_target()        URL | <songId>_<partId> | <songId>
-  ├── pipeline.fetch_and_parse()  (or cache.load_score())
-  ├── build_schedule()        Score IR → JSON-clean dict
-  └── stdlib http.server       /, /player.js, /api/score
-                                       ↓
-                                browser fetches + plays
+  ├── resolve_target()          (unchanged from v36)
+  ├── pipeline.compile_to_svg() ── lilypond -dbackend=svg → N SVG pages
+  ├── build_schedule(svg_pages=N)
+  └── ThreadingHTTPServer
+        ├── /              → player.html  (sheet music + dark control panel)
+        ├── /player.js     → player.js    (Tone.js + SVG fetch+inline)
+        ├── /api/score     → schedule JSON, includes svg_pages count
+        └── /svg/<i>       → i-th LilyPond SVG, image/svg+xml
 ```
 
-The server is `http.server.ThreadingHTTPServer` from stdlib — no Flask,
-no new dependencies. The score is loaded once at startup and pinned to
-the handler class; one server instance plays one score.
+`pipeline.py` gains:
+* `compile_to_svg(score, output_dir, drum_key, auto_layout) -> list[str]`,
+  invokes LilyPond once with `-dbackend=svg -dno-point-and-click`, globs
+  the output directory for `<basename>*.svg`, returns paths in page order.
+* `_emit_ly_file()` and `_report_lily_output()` helpers shared between
+  `compile_to_pdf` and `compile_to_svg`. Guarantees the PDF and the
+  on-screen SVG are compiled from byte-identical .ly source.
+* `_svg_page_index()` sort key handles both LilyPond filename forms:
+  `<base>.svg` (single-page) sorts as 0, `<base>-N.svg` (multi-page)
+  sorts as N.
 
-### Schedule construction
+`player.py` invokes `compile_to_svg` after resolving the score and before
+starting the HTTP server, then pins the resulting paths to the handler
+class. New CLI flags:
+* `--no-svg`: skip LilyPond compilation (fast startup, no sheet music)
+* `--no-drum-key`: forwarded to the emitter
+* `--with-breaks`: forwarded to the emitter
 
-`build_schedule(score)` walks the IR once and produces a flat dict the
-browser consumes directly:
-
-* Each non-rest event becomes `{seconds, midi: [int, ...], grace_v8: bool}`
-  where `seconds = score.seconds_at(event.position)`.
-* Each measure becomes `{index, seconds_start, time_sig, marker}`.
-* Each tempo change becomes `{seconds, bpm}`.
-* `total_seconds = score.seconds_at(last.position + last.duration)`.
-
-Tempo-map walking is server-side only. Fractions never reach the browser:
-all times are floats in seconds. This keeps playback timing consistent
-with the LilyPond emitter's view of time (both go through
-`Score.seconds_at()`).
+If LilyPond compilation fails for any reason, the server still starts and
+serves playback — the sheet-music panel shows an error message.
 
 ### Browser side
 
-* **Tone.js 14.8.49** from cdnjs (single `<script>` tag, no bundler).
-* **One synth per category** (kick, snare, sidestick, hatClosed, hatOpen,
-  tom, crash, ride). MIDI → category dispatch with per-tom pitch.
-  Synthesised, not sampled — diagnostic sound, not realistic.
-* **Schedule once on first Play.** Each event becomes a
-  `Tone.Transport.schedule()` call. v8 acciaccaturas (`grace_v8: true`)
-  are nudged 30 ms early so they sound before the beat.
-* **UI updates via requestAnimationFrame**, reading
-  `Tone.Transport.seconds` each frame and binary-searching the measure
-  and tempo arrays. No `Tone.Draw` needed.
+* SVG pages fetched in parallel via `Promise.all` after `/api/score`
+  returns. Inlined into `<div class="sheet-page">` containers via
+  `innerHTML`, so 6c can later attach event handlers to noteheads.
+* Light "paper" panel under the dark controls — sheet-music-on-a-desk
+  feel. CSS `max-width: 100%; height: auto` lets each SVG scale to fit.
 
-### Validation
+### Validation (v37)
 
-* `test_player_smoke.py` (offline, with mock IR): `build_schedule`
-  produces correct shape, total seconds at known tempos, mid-score
-  tempo changes, chord events, rest skipping, JSON round-trip.
-* `test_player_http.py` (offline): server starts on ephemeral port,
-  `/api/score` returns valid JSON, `/` returns text/html, unknown
-  paths return 404.
+* 7 SVG-specific tests (test_v37_svg.py): sort key for both single- and
+  multi-page filenames; `compile_to_svg` glob+sort behaviour; stale-page
+  cleanup between runs; LilyPond command-line includes `-dbackend=svg`
+  and `-dno-point-and-click` (and excludes `-dbackend=cairo`); raises
+  cleanly if LilyPond produces no output; `/svg/<i>` HTTP endpoint
+  serves the right file with `image/svg+xml`, returns 404 for
+  out-of-range and non-numeric indices.
+* 6 v36 tests still pass against the new `build_schedule(svg_pages=...)`
+  signature (default 0 preserves old behaviour).
+* 3 HTTP-layer tests still pass.
 * Live test on Windows pending.
 
-### Files added in v36
+### Files changed in v37
 
-* `player.py` — server + schedule builder + CLI
-* `player.html` — single-page UI with Tone.js loaded from cdnjs
-* `player.js` — schedule consumer + synth dispatch + Tone.Transport
-  scheduling + UI loop
+* `pipeline.py` — `compile_to_svg`, `_emit_ly_file`, `_report_lily_output`,
+  `_svg_page_index` helpers, `compile_to_pdf` refactored to use them
+* `player.py` — invokes `compile_to_svg` at startup, serves `/svg/<i>`,
+  threading-safe class state for `svg_pages`, new CLI flags
+* `player.html` — sheet-music light panel below the dark control panel
+* `player.js` — `loadSheetMusic()` fetches and inlines SVG pages
 
-`ir.py`, `parser.py`, `cache.py`, `emitter.py`, `pipeline.py`, `main.py`,
+`ir.py`, `parser.py`, `cache.py`, `emitter.py`, `main.py`,
 `cdn_resolver.py`, `lilypond_utils.py`, `apply_update.py`,
-`flush_cache.py` are unchanged. **Cache flush not required** — IR
-layout unchanged.
+`flush_cache.py` unchanged. **Cache flush not required** — IR layout
+unchanged.
 
 ### Known approximations
 
-* **v8 grace timing.** The 30 ms early-onset for v8 acciaccaturas is a
-  perceptual heuristic, not derived from the parser. If the parser
-  already places v8 graces at a position slightly before the next
-  event, the offset double-shifts. Audible only on songs with many
-  acciaccaturas (Eye of the Tiger m.38 is the canonical case); adjust
-  `GRACE_V8_OFFSET_SECONDS` in `player.js` if needed.
-* **Tempo ramps.** `TempoChange.linear` is ignored (matches the
-  existing `Score.seconds_at()` behaviour). Step-tempo only.
-* **Tremolo, dynamics, ghosts, accents.** Ignored for playback. The
-  IR fields are preserved.
+* Per LilyPond docs: SVG output does not embed text fonts. Tempo numbers,
+  bar numbers, and section markers render in the browser's default font;
+  music glyphs are full vector. Less elegant than the PDF for text but
+  legible.
+* Compilation cost is paid at every player startup (~1–3 s on a
+  modern machine). `--no-svg` opts out for fast launches.
 
 ---
 
-## Current milestone — Milestone 6b: Read-only grid viewer (next)
+## Current milestone — Milestone 6c: Playback cursor on the SVG (next)
 
-Next sub-milestone: render the cached IR as an instrument-row grid
-(rows = drums used in this song, columns = beat subdivisions per
-measure, filled cells = hits). No editing yet — the grid is a viewer
-that reuses the same `/api/score` JSON the player consumes.
+Now that sheet music and audio coexist in one window, the natural next
+step is synchronising them: as playback advances, highlight the current
+notehead (or the current measure barline) so the eye can follow the ear.
 
-This validates the IR → grid serialisation choice (per-measure
-adaptive resolution vs. fixed) before 6c introduces a write path.
+Architecture sketch:
+
+* In `emitter.py`, override `NoteHead.output-attributes` (or attach a
+  `before-line-breaking` engraver hook) to tag each notehead with
+  `class="note"` and `data-pos="{position}"` (whole-notes from score
+  start, as a Fraction-as-string). Bar lines get tagged similarly with
+  `data-bar="{index}"`.
+* `player.js` reads the running `Tone.Transport.seconds`, binary-searches
+  the schedule's `events[]` to find the active event index, and toggles
+  CSS classes on the matching SVG group. Active event = `seconds <=
+  transport.seconds < next_event.seconds`.
+* CSS: `.sheet-page g.note.active { fill: var(--accent); }` — a colour
+  change on the LilyPond fill.
+
+Risks/uncertainties to investigate before coding:
+
+1. Does `output-attributes` survive through the multi-page page break?
+   I.e., do all noteheads on page 2 also get the attribute?
+2. Tempo-map drift: `Score.seconds_at()` and the emitter agree on event
+   ordering, but not necessarily on per-event start times if the parser's
+   notion of `Event.position` differs subtly from the emitter's notation
+   width. May need a small tolerance.
+3. Performance: 800-event songs with 60fps update are fine, but DOM
+   class toggling on every animation frame is wasteful. The right thing
+   is to attach the class only on event boundary crossings.
 
 ## Planned future milestones
 
-**Milestone 6c–e** — see sub-milestone ordering in v36 entry above.
+**Milestone 6d — Sample-based playback (optional)**
+
+Replace Tone.js synth dispatch with `Tone.Sampler`/`Tone.Players` reading
+from a CC0 drum kit. Source kit selection and distribution (samples in
+repo vs lazy download from a CDN) need decisions; code change is
+modest. Cosmetic improvement, not a correctness one.
+
+**Milestone 6e — Editing surface**
+
+Either via clicking noteheads in the inlined SVG (with `output-attributes`
+already in place from 6c, this becomes accessible), or via a separate
+grid pane. Decision deferred until 6c is in.
+
+**Milestone 6f — Structural edits**
+
+Section markers, time-signature changes, insert/delete measure, change
+tempo. Requires the inverse of `cache.score_to_dict()` (`dict_to_score()`
+already exists) and a write path through the cache.
+
+**Milestone 6g — YouTube sync**
+
+Embedded player + playhead synchronised with the score timeline.
+`Score.youtube_id` and `Score.youtube_offset` IR fields exist already.
 
 **Milestone 7 — Notation polish**
 
