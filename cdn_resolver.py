@@ -136,27 +136,37 @@ def parse_songsterr_url(url: str) -> tuple[int, Optional[int]]:
 
 # ── Drum-track identification (shared by both strategies) ────────────────────
 
+def _track_part_id(track: dict, index: int) -> int:
+    """
+    Return the partId of a track entry.
+
+    Prefer the track's explicit `partId` field if present; otherwise fall
+    back to its index in the tracks array. The page-state form of the data
+    has explicit partIds, but the raw `/api/meta/{songId}` form does not —
+    Songsterr's frontend code synthesises partId from the array index, so
+    we mirror that.
+    """
+    pid = track.get('partId') if isinstance(track, dict) else None
+    return int(pid) if pid is not None else index
+
+
 def _find_drum_track(tracks: list, hint: Optional[int]) -> Optional[dict]:
     """
     Locate the drum track entry in a tracks[] list.
 
-    If `hint` is given (from a t<partId> URL suffix), find the track entry
-    matching that partId — this lets the user override auto-detection on
-    multi-track songs.
+    If `hint` is given (from a t<partId> URL suffix), find the track whose
+    effective partId (explicit or index-derived) matches the hint.
 
-    Otherwise, prefer tracks where Songsterr has explicitly set isDrums=True
-    (its own derived field), then fall back to instrumentId==1024, then to
-    'drum' in the track name.
+    Otherwise, prefer tracks where Songsterr has explicitly set isDrums=True,
+    then fall back to instrumentId==1024, then to 'drum' in the track name.
     """
     if not isinstance(tracks, list):
         return None
 
     if hint is not None:
-        for t in tracks:
-            if isinstance(t, dict) and t.get('partId') == hint:
+        for i, t in enumerate(tracks):
+            if isinstance(t, dict) and _track_part_id(t, i) == hint:
                 return t
-        # Hint didn't match anything — return None and let the caller decide
-        # whether to fall back. We do NOT silently use the wrong track.
         return None
 
     # Pass 1: explicit isDrums flag
@@ -215,11 +225,12 @@ def _build_cdn_url_from_meta(meta: dict, song_id: int,
             print('    No drum track identifiable in tracks[].')
         return None
 
-    part_id = track.get('partId')
-    if part_id is None:
-        print(f'    Drum track entry has no partId field. Track keys: '
-              f'{sorted(track.keys())}')
-        return None
+    # Find the track's index in case its partId is missing (raw API form).
+    try:
+        track_index = tracks.index(track)
+    except ValueError:
+        track_index = 0
+    part_id = _track_part_id(track, track_index)
 
     try:
         return (f'https://{host}/{int(song_id)}/{int(revision_id)}/'
@@ -462,7 +473,11 @@ def probe_page(page_url: str) -> dict:
                 out['meta_api_tracks_count'] = len(tracks)
                 drum = _find_drum_track(tracks, hint)
                 if drum:
-                    out['meta_api_drum_partId'] = drum.get('partId')
+                    try:
+                        idx = tracks.index(drum)
+                    except ValueError:
+                        idx = 0
+                    out['meta_api_drum_partId'] = _track_part_id(drum, idx)
         else:
             out['meta_api_status'] = f'non-dict: {type(meta).__name__}'
     except Exception as e:  # noqa: BLE001

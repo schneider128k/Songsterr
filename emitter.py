@@ -2,39 +2,61 @@ r"""
 emitter.py — Compile a Score IR to a LilyPond source string.
 
 Typesetting choices:
-- Single voice, \stemDown — no phantom rests, crash+kick share one stem
-- \numericTimeSignature — shows 4/4 not C symbol
-- Beam.damping = +inf — flat horizontal beams (standard in drum music)
-- ragged-right — systems not stretched to fill page width
-- Section breaks before sections with >= MIN_SECTION_MEASURES measures
-- Bar numbers every 4 measures, also at every system start
-- Custom drumStyleTable — hi-hat above staff (position 5 not 3)
-- No courtesy time signature at line ends
-- Letter paper, zero indent (no instrument name label)
-- Header: title, composer (artist), subtitle (drummer)
+  - Single voice, \stemDown — no phantom rests, crash+kick share one stem
+  - \numericTimeSignature — shows 4/4 not C symbol
+  - Beam.damping = +inf — flat horizontal beams (standard in drum music)
+  - ragged-right — systems not stretched to fill page width
+  - Bar numbers every 4 measures, also at every system start
+  - Custom drumStyleTable — hi-hat above staff (position 5 not 3)
+  - No courtesy time signature at line ends
+  - Letter paper, zero indent (no instrument name label)
+  - Header: title, composer (artist), subtitle (drummer)
+
+Layout (v35):
+  - auto_layout=True (default): no forced \break — LilyPond decides
+    line-breaking. Produces compact output that fills page width.
+  - auto_layout=False: forced \break before sections >= MIN_SECTION_MEASURES,
+    and after every MAX_MEASURES_PER_LINE measures. Use for one-section-
+    per-line layouts.
+
+Grace notes (v35 fix):
+  - onBeat (v8): \appoggiatura prefix only — the cursor stays put, the
+    next event provides the actual note.
+  - beforeBeat with near-zero duration (v8 acciaccatura): \acciaccatura
+    prefix only — same reasoning.
+  - beforeBeat with real duration (v5 flam): \acciaccatura + the actual
+    note token. The grace decorates a real hit.
+
+  The threshold separating the two beforeBeat cases (V8_GRACE_DUR_THRESHOLD,
+  1/32) is the same one used by _emit_measure for cursor-advance decisions —
+  consistent treatment in both places means a v8 acciaccatura never produces
+  a duplicate note that overflows the bar.
 """
 
 from fractions import Fraction
 from ir import Score
 
-# Minimum measures in a section to trigger a forced line break before it
+# Forced-line-break thresholds (only used when auto_layout=False).
 MIN_SECTION_MEASURES = 3
-
-# Maximum measures per system line (forced \break if exceeded)
 MAX_MEASURES_PER_LINE = 4
+
+# Grace-note duration threshold: durations below this are treated as v8-style
+# (no cursor advance, no real-note emission). Used by both _emit_measure and
+# _event_to_token so the two stay consistent.
+V8_GRACE_DUR_THRESHOLD = Fraction(1, 32)
 
 # Duration table: exact Fraction of whole note -> LilyPond duration string
 _DURS = [
-    (Fraction(1,  1), '1'),
-    (Fraction(7,  8), '2..'),
-    (Fraction(3,  4), '2.'),
-    (Fraction(1,  2), '2'),
+    (Fraction(1, 1), '1'),
+    (Fraction(7, 8), '2..'),
+    (Fraction(3, 4), '2.'),
+    (Fraction(1, 2), '2'),
     (Fraction(7, 16), '4..'),
-    (Fraction(3,  8), '4.'),
-    (Fraction(1,  4), '4'),
+    (Fraction(3, 8), '4.'),
+    (Fraction(1, 4), '4'),
     (Fraction(7, 32), '8..'),
     (Fraction(3, 16), '8.'),
-    (Fraction(1,  8), '8'),
+    (Fraction(1, 8), '8'),
     (Fraction(3, 32), '16.'),
     (Fraction(1, 16), '16'),
     (Fraction(3, 64), '32.'),
@@ -63,8 +85,9 @@ def _fill_rests(f):
 def _event_to_token(ev, force_dur=None):
     """
     Render one Event as a single LilyPond token.
+
     force_dur: if given, overrides the duration string (used inside tuplets
-               where the notated duration like 1/24 is not a standard value).
+    where the notated duration like 1/24 is not a standard value).
     """
     ly_dur = force_dur if force_dur is not None else _dur(ev.duration)
 
@@ -72,7 +95,7 @@ def _event_to_token(ev, force_dur=None):
     if ev.grace:
         if not ev.notes:
             return None
-        nms   = sorted({n.lily for n in ev.notes})
+        nms = sorted({n.lily for n in ev.notes})
         inner = nms[0] if len(nms) == 1 else '<' + ' '.join(nms) + '>'
         if ev.grace_type == 'on':
             # onBeat (v8): emit only the appoggiatura prefix — the following
@@ -80,7 +103,15 @@ def _event_to_token(ev, force_dur=None):
             # adds spurious 1/64 duration causing bar check failures.
             return f'\\appoggiatura {{ {inner}8 }}'
         else:
-            # beforeBeat (v5 flam / v8 acciaccatura): self-contained token
+            # beforeBeat: distinguish v5 flam from v8 acciaccatura.
+            #   v5 flam: real duration (e.g. 1/8) -> grace + actual note,
+            #     because the v5 model uses the grace as a decoration on a
+            #     hit that is itself part of the rhythm.
+            #   v8 acciaccatura: near-zero duration -> grace only, because
+            #     the v8 model represents pure ornaments with a synthetic
+            #     ~1/64 or ~1/128 duration the cursor must NOT advance through.
+            if ev.duration < V8_GRACE_DUR_THRESHOLD:
+                return f'\\acciaccatura {{ {inner}8 }}'
             return f'\\acciaccatura {{ {inner}8 }} {inner}{ly_dur}'
 
     # Rest
@@ -90,23 +121,23 @@ def _event_to_token(ev, force_dur=None):
     # Tremolo roll
     if ev.tremolo_base:
         count = max(1, round(float(ev.duration * ev.tremolo_base)))
-        nms   = sorted({n.lily for n in ev.notes})
+        nms = sorted({n.lily for n in ev.notes})
         inner = nms[0] if len(nms) == 1 else '<' + ' '.join(nms) + '>'
         return f'\\repeat tremolo {count} {{ {inner}{ev.tremolo_base} }}'
 
     # Normal note / chord
-    nms    = sorted({n.lily for n in ev.notes})
+    nms = sorted({n.lily for n in ev.notes})
     ghosts = {n.lily for n in ev.notes if n.ghost}
     accent = max((n.accent for n in ev.notes), default=0)
-
     if len(nms) == 1:
-        n   = nms[0]
+        n = nms[0]
         tok = f'\\parenthesize {n}{ly_dur}' if n in ghosts else f'{n}{ly_dur}'
     else:
         tok = f'<{" ".join(nms)}>{ly_dur}'
 
     if accent == 1:   tok += '\\accent'
     elif accent == 2: tok += '\\marcato'
+
     return tok
 
 
@@ -120,14 +151,11 @@ def _emit_measure(events, measure_dur, measure_pos):
     end_pos = measure_pos + measure_dur
     hairpin_open = False
     emitted_tuplet_groups = set()
-    # v8 grace notes have duration ~1/128 (near zero, don't advance cursor)
-    # v5 flams have a real duration (1/8, 1/4 etc, do advance cursor)
-    GRACE_DUR_THRESHOLD = Fraction(1, 32)
-    i = 0
 
     # Build a flat list of non-grace events for tie look-ahead
     non_grace = [e for e in events if not e.grace]
 
+    i = 0
     while i < len(events):
         ev = events[i]
 
@@ -143,11 +171,9 @@ def _emit_measure(events, measure_dur, measure_pos):
                 i += 1
                 continue
             emitted_tuplet_groups.add(gid)
-            group     = [e for e in events if e.tuplet_group == gid]
-            N, M      = ev.tuplet_n, ev.tuplet_m
+            group = [e for e in events if e.tuplet_group == gid]
+            N, M = ev.tuplet_n, ev.tuplet_m
             group_dur = sum(e.duration for e in group)
-
-            # Derive the written note type from the tuplet ratio and actual duration.
             note_type_int = round(float(Fraction(M, N) / ev.duration))
             note_type_str = str(note_type_int)
 
@@ -174,15 +200,14 @@ def _emit_measure(events, measure_dur, measure_pos):
             tok = _event_to_token(ev)
             if tok is not None:
                 tokens.append(tok)
-            # Advance cursor for v5 flams (real duration) but not v8 grace notes
-            if ev.duration >= GRACE_DUR_THRESHOLD:
+            # Advance cursor for v5 flams (real duration) but not v8 graces
+            if ev.duration >= V8_GRACE_DUR_THRESHOLD:
                 cursor += ev.duration
             i += 1
             continue
 
         # Normal event
         tok = _event_to_token(ev)
-
         if tok is not None and tok[0] != 'r':
             if ev.hairpin == 'start' and not hairpin_open:
                 tok = '\\< ' + tok
@@ -191,18 +216,16 @@ def _emit_measure(events, measure_dur, measure_pos):
                 tok += ' \\!'
                 hairpin_open = False
 
-            # FIX 3: Tie validation — only emit ~ if a tied note's lily name
-            # also appears in the next non-grace event. This prevents spurious
-            # tie arcs connecting e.g. crashcymbal to openhihat.
+            # Tie validation — only emit ~ if a tied note's lily name also
+            # appears in the next non-grace event. Prevents spurious arcs
+            # connecting e.g. crashcymbal to openhihat.
             tied_lily_names = {n.lily for n in ev.notes if getattr(n, 'tie', False)}
             if tied_lily_names:
-                # Find the next non-grace event after this one
                 ng_idx = next(
                     (k for k, e in enumerate(non_grace) if e is ev), None)
                 next_ev = non_grace[ng_idx + 1] if (
                     ng_idx is not None and ng_idx + 1 < len(non_grace)) else None
                 next_lily = {n.lily for n in next_ev.notes} if next_ev else set()
-                # Only tie notes that actually appear in the next event
                 valid_ties = tied_lily_names & next_lily
                 if valid_ties:
                     tok += ' ~'
@@ -223,70 +246,57 @@ def _emit_measure(events, measure_dur, measure_pos):
 # Custom drum style table.
 # Positions: 0=middle line, 4=top line, 5=space above top line,
 # 6=first ledger line above, -4=bottom line, -5=space below bottom.
-# Staff position history (LilyPond positions: 0=middle line, +1=space above it):
-#   v18: snare moved 0 -> -1 (then corrected again)
-#   v19: ride 5->4, tomml 1->0, tomfh -2->-3, tomfl -3->-4
-#   v21: snare corrected to +1 (space between lines 3 and 4 = standard position)
-# Final collision-free layout validated across 5 songs:
-#   crashcymbal +7, hihat +5, ride +4, hightom +3, himidtom +2,
-#   snare +1, lowtom 0 ... wait, tomml is 0, snare is +1 -- no collision.
 _DRUM_STYLE = """\
 #(alist->hash-table '(
-  (acousticbassdrum default #f -5)
-  (bassdrum         default #f -5)
-  (bd               default #f -5)
-  (acousticsnare    default #f  1)
-  (snare            default #f  1)
-  (electricsnare    default #f  1)
-  (sn               default #f  1)
-  (sidestick        cross   #f -2)
-  (hihat            cross   #f  5)
-  (closedhihat      cross   #f  5)
-  (hh               cross   #f  5)
-  (halfopenhihat    xcircle #f  5)
-  (openhihat        xcircle #f  5)
-  (hho              xcircle #f  5)
-  (pedalhihat       cross   #f -5)
-  (hhp              cross   #f -5)
-  (crashcymbal      cross   #f  7)
-  (cymca            cross   #f  7)
-  (crashcymbalb     cross   #f  6)
-  (cymcb            cross   #f  6)
-  (ridecymbal       cross   #f  4)
-  (ridecymbalb      cross   #f  4)
-  (cymr             cross   #f  4)
-  (ridebell         default #f  4)
-  (chinesecymbal    cross   #f  7)
-  (splashcymbal     cross   #f  7)
-  (cowbell          default #f  4)
-  (cb               default #f  4)
-  (tambourine       cross   #f  4)
-  (tamb             cross   #f  4)
-  (vibraslap        diamond #f  0)
-  (vibs             diamond #f  0)
-  (handclap         default #f  4)
-  (highfloortom     default #f -3)
-  (tomfh            default #f -3)
-  (lowfloortom      default #f -4)
-  (tomfl            default #f -4)
-  (lowtom           default #f -1)
-  (toml             default #f -1)
-  (lowmidtom        default #f  0)
-  (tomml            default #f  0)
-  (himidtom         default #f  2)
-  (tommh            default #f  2)
-  (hightom          default #f  3)
-  (tomh             default #f  3)
+    (acousticbassdrum default #f -5)
+    (bassdrum default #f -5)
+    (bd default #f -5)
+    (acousticsnare default #f 1)
+    (snare default #f 1)
+    (electricsnare default #f 1)
+    (sn default #f 1)
+    (sidestick cross #f -2)
+    (hihat cross #f 5)
+    (closedhihat cross #f 5)
+    (hh cross #f 5)
+    (halfopenhihat xcircle #f 5)
+    (openhihat xcircle #f 5)
+    (hho xcircle #f 5)
+    (pedalhihat cross #f -5)
+    (hhp cross #f -5)
+    (crashcymbal cross #f 7)
+    (cymca cross #f 7)
+    (crashcymbalb cross #f 6)
+    (cymcb cross #f 6)
+    (ridecymbal cross #f 4)
+    (ridecymbalb cross #f 4)
+    (cymr cross #f 4)
+    (ridebell default #f 4)
+    (chinesecymbal cross #f 7)
+    (splashcymbal cross #f 7)
+    (cowbell default #f 4)
+    (cb default #f 4)
+    (tambourine cross #f 4)
+    (tamb cross #f 4)
+    (vibraslap diamond #f 0)
+    (vibs diamond #f 0)
+    (handclap default #f 4)
+    (highfloortom default #f -3)
+    (tomfh default #f -3)
+    (lowfloortom default #f -4)
+    (tomfl default #f -4)
+    (lowtom default #f -1)
+    (toml default #f -1)
+    (lowmidtom default #f 0)
+    (tomml default #f 0)
+    (himidtom default #f 2)
+    (tommh default #f 2)
+    (hightom default #f 3)
+    (tomh default #f 3)
 ))\
 """
 
-
-
-# Ordered list of all drum instruments for the "Drum Key" legend,
-# top to bottom by staff position. Only instruments that actually
-# appear in the score are included.
 _DRUM_KEY_ORDER = [
-    # (canonical lily name,  display label)
     ('crashcymbal',   'Crash'),
     ('crashcymbalb',  'Crash 2'),
     ('ridecymbal',    'Ride'),
@@ -306,7 +316,6 @@ _DRUM_KEY_ORDER = [
     ('bassdrum',      'Bass Drum'),
 ]
 
-# Alias → canonical name (so e.g. 'sn' counts as 'acousticsnare')
 _DRUM_KEY_ALIASES = {
     'snare': 'acousticsnare', 'electricsnare': 'acousticsnare', 'sn': 'acousticsnare',
     'bd': 'bassdrum',
@@ -319,13 +328,7 @@ _DRUM_KEY_ALIASES = {
 
 
 def _emit_drum_key(score: 'Score') -> str:
-    """
-    Return LilyPond source for the Drum Key legend appended after the score.
-    Shows one labeled notehead per instrument that actually appears in the
-    score, ordered top-to-bottom on the staff, inside a cadenzaOn block so
-    LilyPond does not insert bar checks or time-signature changes.
-    """
-    # Collect all lily names used anywhere in the score
+    """LilyPond source for the Drum Key legend appended after the score."""
     used = set()
     for meas in score.measures:
         for ev in meas.events:
@@ -333,13 +336,10 @@ def _emit_drum_key(score: 'Score') -> str:
                 canonical = _DRUM_KEY_ALIASES.get(note.lily, note.lily)
                 used.add(canonical)
 
-    # Filter the ordered table to only used instruments
     entries = [(lily, label) for lily, label in _DRUM_KEY_ORDER if lily in used]
     if not entries:
         return ''
 
-    # Build note tokens: each instrument gets a quarter note with a text label
-    # below, separated by quarter rests so the labels have breathing room.
     tokens = []
     for lily, label in entries:
         escaped = label.replace('"', '\\"')
@@ -347,10 +347,8 @@ def _emit_drum_key(score: 'Score') -> str:
             f'{lily}4_\\markup {{ \\small "{escaped}" }}'
         )
         tokens.append('s1')
-
     notes = ' '.join(tokens)
 
-    # Build the block using a list to avoid backslash-in-f-string issues
     L = [
         '\\score {',
         '  \\new DrumStaff \\with {',
@@ -370,7 +368,7 @@ def _emit_drum_key(score: 'Score') -> str:
         '    \\context {',
         '      \\Score',
         '      \\override RehearsalMark.font-size = #1',
-        '      \\override RehearsalMark.padding   = #1',
+        '      \\override RehearsalMark.padding = #1',
         '    }',
         '  }',
         '}',
@@ -379,10 +377,7 @@ def _emit_drum_key(score: 'Score') -> str:
 
 
 def _compute_section_lengths(measures):
-    """
-    For each measure that starts a section (has a marker), count how many
-    measures belong to it. Returns dict {measure_list_index: count}.
-    """
+    """For each measure that starts a section, count its length in measures."""
     lengths = {}
     markers = [(i, m) for i, m in enumerate(measures) if m.marker]
     for j, (i, m) in enumerate(markers):
@@ -392,41 +387,39 @@ def _compute_section_lengths(measures):
 
 
 def _is_pickup(measures):
-    """
-    Return True if the first measure is a pickup bar: a rest-only measure
-    whose time signature differs from the second measure's time signature.
-    This handles songs like Square Hammer where Songsterr prepends a half-bar
-    rest before the main 4/4 content.
-    """
+    """First measure is a pickup iff it's all rests and time-sig differs from m.2."""
     if len(measures) < 2:
         return False
     m0 = measures[0]
     m1 = measures[1]
     if m0.time_sig == m1.time_sig:
         return False
-    # Check all events in m0 are rests (empty notes list)
     all_rests = all(len(ev.notes) == 0 for ev in m0.events)
     return all_rests
 
 
-def emit_lilypond(score: Score, version: str, drum_key: bool = True) -> str:
-    """Compile a Score IR to a LilyPond source string.
-    If drum_key is True (default), append a Drum Key legend at the end.
+def emit_lilypond(score: Score, version: str, drum_key: bool = True,
+                  auto_layout: bool = True) -> str:
+    """
+    Compile a Score IR to a LilyPond source string.
+
+    drum_key=True   : append a Drum Key legend at the end (default).
+    auto_layout=True: do not emit any forced \\break — let LilyPond
+                      decide line breaks based on page width. Produces
+                      compact, fills-the-page output (default v35+).
+    auto_layout=False: emit \\break before each section >= MIN_SECTION_MEASURES
+                      and after every MAX_MEASURES_PER_LINE measures.
+                      Use for one-section-per-line layouts (pre-v35 default).
     """
     voice_lines = []
-
     sorted_tempos = sorted(score.tempo_changes, key=lambda t: t.position)
-    initial_bpm   = sorted_tempos[0].bpm if sorted_tempos else 120
-    tempo_at_pos  = {t.position: t.bpm for t in sorted_tempos[1:]}
+    initial_bpm = sorted_tempos[0].bpm if sorted_tempos else 120
+    tempo_at_pos = {t.position: t.bpm for t in sorted_tempos[1:]}
 
-    section_lengths = _compute_section_lengths(score.measures)
+    section_lengths = _compute_section_lengths(score.measures) if not auto_layout else {}
     prev_sig = None
-    measures_on_line = 0  # tracks measures since last line break
+    measures_on_line = 0  # only meaningful when auto_layout is False
 
-    # FIX 2: Detect pickup bar and determine the main time signature.
-    # If the first measure is a pickup, we suppress its \time directive and
-    # emit \partial instead, so LilyPond numbers the first full bar as bar 1
-    # (matching Songsterr's bar numbering).
     pickup = _is_pickup(score.measures)
     if pickup:
         main_sig = score.measures[1].time_sig
@@ -434,23 +427,20 @@ def emit_lilypond(score: Score, version: str, drum_key: bool = True) -> str:
         main_sig = score.measures[0].time_sig if score.measures else (4, 4)
 
     for mi, meas in enumerate(score.measures):
-        # Forced line break before long-enough sections
-        if meas.marker and mi > 0:
-            if section_lengths.get(mi, 0) >= MIN_SECTION_MEASURES:
+        # Forced line breaks — only when auto_layout is disabled.
+        if not auto_layout:
+            if meas.marker and mi > 0:
+                if section_lengths.get(mi, 0) >= MIN_SECTION_MEASURES:
+                    voice_lines.append('  \\break')
+                    measures_on_line = 0
+            elif (measures_on_line > 0 and
+                  measures_on_line % MAX_MEASURES_PER_LINE == 0):
                 voice_lines.append('  \\break')
                 measures_on_line = 0
 
-        # Also break every MAX_MEASURES_PER_LINE measures to avoid crowding
-        elif measures_on_line > 0 and measures_on_line % MAX_MEASURES_PER_LINE == 0:
-            voice_lines.append('  \\break')
-
-        # FIX 2: For the pickup measure, emit \partial instead of \time.
-        # For all other measures, emit \time only when the signature changes.
         if pickup and mi == 0:
             partial_dur = _dur(meas.duration)
             voice_lines.append(f'  \\partial {partial_dur}')
-            # Do NOT emit \time here; set prev_sig so the next measure's
-            # \time fires normally.
             prev_sig = meas.time_sig
         else:
             if meas.time_sig != prev_sig:
@@ -469,8 +459,6 @@ def emit_lilypond(score: Score, version: str, drum_key: bool = True) -> str:
         measures_on_line += 1
 
     ts0 = f'{main_sig[0]}/{main_sig[1]}'
-
-    # Build subtitle: show drummer if known
     subtitle_line = (f'  subtitle = "{score.drummer}"'
                      if score.drummer else '')
 
@@ -518,13 +506,15 @@ def emit_lilypond(score: Score, version: str, drum_key: bool = True) -> str:
         '    \\context {',
         '      \\Score',
         '      \\override RehearsalMark.font-size = #1',
-        '      \\override RehearsalMark.padding   = #1',
+        '      \\override RehearsalMark.padding = #1',
         '    }',
         '  }',
         '}',
     ]
 
     result = '\n'.join(lines) + '\n'
+
     if drum_key:
         result += '\n' + _emit_drum_key(score)
+
     return result
