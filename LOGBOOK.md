@@ -164,7 +164,10 @@ the artifact disappears.
 * End-to-end re-emit of Eye of the Tiger from cached IR: 0 forced breaks
   with auto_layout=True (vs 29 with auto_layout=False); no duplicate-note
   pattern in any of the 6 previously-warning measures.
-* Live test on Windows pending.
+* **Live test on Windows: confirmed.** Eye of the Tiger via Strategy A in
+  one API call (partId=8, no Strategy B fallback), PDF compiled with no
+  bar-check warnings on any of the 6 previously-warning measures.
+  Wave of Mutilation regression check clean (auto-layout default).
 
 ### Files changed in v35
 
@@ -181,13 +184,129 @@ unchanged.
 
 ---
 
-## Current milestone — Milestone 6: Browser-based grid editor (next)
+## Milestone 6a — Browser playback MVP (completed, update v36)
 
-* `python editor.py` opens a local web UI with a drum grid
-* Toggle hits, edit section markers, change time signatures, compile to PDF
-* Browser playback (Tone.js), YouTube sync
+First Milestone 6 deliverable: read-only browser playback of any cached
+score, intended both as a standalone listening tool and as an audible
+audit of the parsed IR. The structure for editor work (server, schedule,
+synth dispatch) is in place but no editing surface is exposed.
+
+### Sub-milestone ordering
+
+Milestone 6 was originally listed as a single deliverable (grid editor +
+Tone.js playback + YouTube sync). It is split into five sub-milestones
+to avoid the "ship everything, validate nothing" pattern that produced
+v33:
+
+* **6a — Browser playback (this update).** Read-only, synth-based.
+* **6b — Read-only grid viewer.** IR rendered as instrument-row grid.
+* **6c — Hit toggling + recompile.** First write path: toggle cells,
+  save modified IR, run the existing PDF pipeline.
+* **6d — Structural edits.** Section markers, time signature changes,
+  insert/delete measure, tempo changes.
+* **6e — YouTube sync.** Embedded player + playhead synchronised with
+  the score timeline.
+
+Playback first because (a) it is a useful artefact on its own,
+(b) it doubles as an IR audit (audible bugs are louder than visual
+ones), and (c) the data path is read-only — no persistence, no
+inverse serialisation.
+
+### Architecture
+
+```
+python player.py <target>
+  ├── resolve_target()        URL | <songId>_<partId> | <songId>
+  ├── pipeline.fetch_and_parse()  (or cache.load_score())
+  ├── build_schedule()        Score IR → JSON-clean dict
+  └── stdlib http.server       /, /player.js, /api/score
+                                       ↓
+                                browser fetches + plays
+```
+
+The server is `http.server.ThreadingHTTPServer` from stdlib — no Flask,
+no new dependencies. The score is loaded once at startup and pinned to
+the handler class; one server instance plays one score.
+
+### Schedule construction
+
+`build_schedule(score)` walks the IR once and produces a flat dict the
+browser consumes directly:
+
+* Each non-rest event becomes `{seconds, midi: [int, ...], grace_v8: bool}`
+  where `seconds = score.seconds_at(event.position)`.
+* Each measure becomes `{index, seconds_start, time_sig, marker}`.
+* Each tempo change becomes `{seconds, bpm}`.
+* `total_seconds = score.seconds_at(last.position + last.duration)`.
+
+Tempo-map walking is server-side only. Fractions never reach the browser:
+all times are floats in seconds. This keeps playback timing consistent
+with the LilyPond emitter's view of time (both go through
+`Score.seconds_at()`).
+
+### Browser side
+
+* **Tone.js 14.8.49** from cdnjs (single `<script>` tag, no bundler).
+* **One synth per category** (kick, snare, sidestick, hatClosed, hatOpen,
+  tom, crash, ride). MIDI → category dispatch with per-tom pitch.
+  Synthesised, not sampled — diagnostic sound, not realistic.
+* **Schedule once on first Play.** Each event becomes a
+  `Tone.Transport.schedule()` call. v8 acciaccaturas (`grace_v8: true`)
+  are nudged 30 ms early so they sound before the beat.
+* **UI updates via requestAnimationFrame**, reading
+  `Tone.Transport.seconds` each frame and binary-searching the measure
+  and tempo arrays. No `Tone.Draw` needed.
+
+### Validation
+
+* `test_player_smoke.py` (offline, with mock IR): `build_schedule`
+  produces correct shape, total seconds at known tempos, mid-score
+  tempo changes, chord events, rest skipping, JSON round-trip.
+* `test_player_http.py` (offline): server starts on ephemeral port,
+  `/api/score` returns valid JSON, `/` returns text/html, unknown
+  paths return 404.
+* Live test on Windows pending.
+
+### Files added in v36
+
+* `player.py` — server + schedule builder + CLI
+* `player.html` — single-page UI with Tone.js loaded from cdnjs
+* `player.js` — schedule consumer + synth dispatch + Tone.Transport
+  scheduling + UI loop
+
+`ir.py`, `parser.py`, `cache.py`, `emitter.py`, `pipeline.py`, `main.py`,
+`cdn_resolver.py`, `lilypond_utils.py`, `apply_update.py`,
+`flush_cache.py` are unchanged. **Cache flush not required** — IR
+layout unchanged.
+
+### Known approximations
+
+* **v8 grace timing.** The 30 ms early-onset for v8 acciaccaturas is a
+  perceptual heuristic, not derived from the parser. If the parser
+  already places v8 graces at a position slightly before the next
+  event, the offset double-shifts. Audible only on songs with many
+  acciaccaturas (Eye of the Tiger m.38 is the canonical case); adjust
+  `GRACE_V8_OFFSET_SECONDS` in `player.js` if needed.
+* **Tempo ramps.** `TempoChange.linear` is ignored (matches the
+  existing `Score.seconds_at()` behaviour). Step-tempo only.
+* **Tremolo, dynamics, ghosts, accents.** Ignored for playback. The
+  IR fields are preserved.
+
+---
+
+## Current milestone — Milestone 6b: Read-only grid viewer (next)
+
+Next sub-milestone: render the cached IR as an instrument-row grid
+(rows = drums used in this song, columns = beat subdivisions per
+measure, filled cells = hits). No editing yet — the grid is a viewer
+that reuses the same `/api/score` JSON the player consumes.
+
+This validates the IR → grid serialisation choice (per-measure
+adaptive resolution vs. fixed) before 6c introduces a write path.
 
 ## Planned future milestones
+
+**Milestone 6c–e** — see sub-milestone ordering in v36 entry above.
 
 **Milestone 7 — Notation polish**
 
