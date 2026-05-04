@@ -12,3 +12,5 @@ __pycache__/
 update_v*.zip
 
 diagnose*.py
+
+session/

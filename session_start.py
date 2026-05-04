@@ -2,25 +2,35 @@
 """
 session_start.py — emit a self-contained session-start prompt for Claude.
 
-Runs three git commands locally and reads two doc files; prints a single
-block of text containing everything Claude needs to bootstrap a session.
-No GitHub API calls, no waiting on a remote fetcher.
+Runs three git commands locally and reads two doc files; writes a single
+file in the session/ subfolder containing everything Claude needs to
+bootstrap a session. No GitHub API calls, no waiting on a remote fetcher.
 
 Usage (from project root):
-    python session_start.py                 # print to stdout
-    python session_start.py | clip          # Windows: copy to clipboard
-    python session_start.py > prompt.txt    # save to file
+    python session_start.py
 
-The output begins with the phrase 'Start new session based on the
-following local repo state.' so Claude can recognise the paste type.
+Output:
+    Writes session/session_upload_<YYYY-MM-DD_HHMMSS>.txt and prints the
+    path. Upload that file as the first message of a new Claude chat —
+    Windows PowerShell mangles a few characters when pasting (e.g. it
+    decorates `parser.py` as `[parser.py](http://parser.py)`), so
+    file-upload is more reliable than stdout-and-paste.
+
+The file contents begin with the phrase 'Start new session based on the
+following local repo state.' so Claude can recognise the upload type.
 
 This is a permanent utility script — like apply_update.py and
-flush_cache.py, do not include it in update zips.
+flush_cache.py, do not include it in update zips. The session/ folder
+should be gitignored.
 """
 
+import datetime
 import subprocess
 import sys
 from pathlib import Path
+
+
+SESSION_DIR = Path("session")
 
 
 def run(cmd, *, allow_fail=False):
@@ -79,7 +89,16 @@ def main():
         "=== README.md ===",
         readme,
     ]
-    print("\n".join(parts))
+    content = "\n".join(parts) + "\n"
+
+    SESSION_DIR.mkdir(exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    out_path = SESSION_DIR / f"session_upload_{timestamp}.txt"
+    out_path.write_text(content, encoding="utf-8")
+
+    print(f"Wrote {out_path}")
+    print(f"  ({len(content):,} chars, {out_path.stat().st_size:,} bytes)")
+    print("Upload that file as the first message of a new Claude chat.")
 
 
 if __name__ == "__main__":
