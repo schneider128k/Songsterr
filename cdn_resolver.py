@@ -66,11 +66,39 @@ import requests
 
 DRUM_INSTRUMENT_ID = 1024
 
-# Default cloudfront subdomain seen in observed CDN URLs and in the page's
-# <link rel="dns-prefetch" href="//dqsljvtekg760.cloudfront.net/"> tag.
-# Strategy B can also discover the host from the page <head>; A falls back
-# to this constant.
-DEFAULT_CLOUDFRONT_HOST = 'dqsljvtekg760.cloudfront.net'
+# Cloudfront hosts where Songsterr serves drum-tab JSON.
+#
+# IMPORTANT: Songsterr distributes songs across multiple CloudFront
+# hosts simultaneously, on a per-song basis. There is NO field in any
+# API response, page-state JSON blob, or HTML metadata that tells us
+# which host serves a given song — the SPA's JS bundle hardcodes the
+# host list and probes them at runtime. We mirror that approach here.
+#
+# The page's <link rel="dns-prefetch"> advertises only the OLDER host
+# even on songs whose live SPA fetches from a NEWER host (verified
+# mid-2026 across 5 songs), so it's NOT reliable as a discovery source.
+#
+# History:
+#   * v34 (early 2026): single host  dqsljvtekg760.cloudfront.net
+#   * v38 (mid-2026): single host  d3d3l6a6rcgkaf.cloudfront.net
+#                     (incomplete — broke 2 of 3 reference songs;
+#                      see LOGBOOK v38/v39)
+#   * v39 (mid-2026): both hosts probed in order, first 200 wins.
+#
+# Order matters: newer hosts first. When Songsterr completes the
+# migration, the older host will start returning 404/403 for everything
+# and we can drop it. When they migrate again to a third host, prepend
+# it. Verify with `python test_cdn_smoke.py` after any change.
+KNOWN_CDN_HOSTS: tuple[str, ...] = (
+    'd3d3l6a6rcgkaf.cloudfront.net',  # newer (some songs only)
+    'dqsljvtekg760.cloudfront.net',   # older (most pre-migration songs)
+)
+
+# Backwards-compatible alias for any external code (or earlier probe
+# scripts) that imports the single-host name. Points at the first
+# (newest) entry of KNOWN_CDN_HOSTS so URLs *constructed* without
+# probing aim at the most likely-correct host.
+DEFAULT_CLOUDFRONT_HOST = KNOWN_CDN_HOSTS[0]
 
 # Browser-ish UA: Songsterr's CDN doesn't care, but the page route's bot
 # protection is friendlier to browser-shaped requests.
@@ -193,14 +221,49 @@ def _find_drum_track(tracks: list, hint: Optional[int]) -> Optional[dict]:
     return None
 
 
+def _validate_cdn_url(url: str, timeout: float = 10.0) -> bool:
+    """HEAD-probe a CDN URL; True iff it returns HTTP 200.
+
+    Used to determine which of `KNOWN_CDN_HOSTS` actually serves a given
+    song. Network errors (timeout, DNS failure, etc.) are treated as
+    "not served" — caller will move on to the next host.
+    """
+    try:
+        r = requests.head(url, headers=_REQUEST_HEADERS,
+                          timeout=timeout, allow_redirects=True)
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def _try_hosts_for(song_id: int, revision_id: int,
+                   image: str, part_id: int) -> Optional[str]:
+    """Build the CDN URL on each known host in order; return the first 200.
+
+    Returns the URL string on success. Returns None if no known host
+    serves this song (which usually means Songsterr has migrated to a
+    new host we don't know about — append it to KNOWN_CDN_HOSTS and
+    re-run test_cdn_smoke.py).
+    """
+    for host in KNOWN_CDN_HOSTS:
+        url = (f'https://{host}/{int(song_id)}/{int(revision_id)}/'
+               f'{str(image)}/{int(part_id)}.json')
+        if _validate_cdn_url(url):
+            return url
+    return None
+
+
 def _build_cdn_url_from_meta(meta: dict, song_id: int,
-                             hint: Optional[int],
-                             host: str = DEFAULT_CLOUDFRONT_HOST) -> Optional[str]:
+                             hint: Optional[int]) -> Optional[str]:
     """
     Given a meta-current dict (from /api/meta/{songId} or state.meta.current),
-    build the drum-track CDN URL. Returns None if any required field is missing.
+    build the drum-track CDN URL. Returns None if any required field is
+    missing or no known host serves the song.
 
-    Logs which field was missing so probe output is useful when shapes drift.
+    Probes every host in KNOWN_CDN_HOSTS in order and returns the first
+    that responds 200 to a HEAD request. The path layout
+    `/<songId>/<revisionId>/<image>/<partId>.json` is consistent across
+    hosts; only the host varies per song.
     """
     revision_id = meta.get('revisionId')
     token = meta.get('image')
@@ -233,11 +296,18 @@ def _build_cdn_url_from_meta(meta: dict, song_id: int,
     part_id = _track_part_id(track, track_index)
 
     try:
-        return (f'https://{host}/{int(song_id)}/{int(revision_id)}/'
-                f'{str(token)}/{int(part_id)}.json')
+        url = _try_hosts_for(song_id, revision_id, token, part_id)
     except (ValueError, TypeError) as e:
         print(f'    Could not assemble CDN URL: {e}')
         return None
+
+    if url is None:
+        print(f'    No known host serves this song. Tried: '
+              f'{list(KNOWN_CDN_HOSTS)}.')
+        print(f'    Songsterr may have migrated to a new host. '
+              f'Run `python test_cdn_smoke.py` for confirmation, then '
+              f'prepend the new host to KNOWN_CDN_HOSTS in cdn_resolver.py.')
+    return url
 
 
 # ── Strategy A: /api/meta/{songId} ───────────────────────────────────────────
@@ -371,10 +441,13 @@ def _resolve_via_page_scrape(page_url: str) -> Optional[str]:
               f'{type(meta_current).__name__}')
         return None
 
-    host = _extract_cdn_host(html)
-    url = _build_cdn_url_from_meta(meta_current, song_id, hint, host=host)
+    # Note: deliberately not using _extract_cdn_host(html) here. As of the
+    # v38 host migration, the page's <link rel="dns-prefetch"> points at
+    # the OLD (stale) host — useless for URL construction, retained only
+    # for probe diagnostics. Both strategies use DEFAULT_CLOUDFRONT_HOST.
+    url = _build_cdn_url_from_meta(meta_current, song_id, hint)
     if url:
-        print(f'  [B] Built (via state.meta.current, host={host}): {url}')
+        print(f'  [B] Built (via state.meta.current): {url}')
     return url
 
 

@@ -256,7 +256,10 @@ serves playback — the sheet-music panel shows an error message.
 * 6 v36 tests still pass against the new `build_schedule(svg_pages=...)`
   signature (default 0 preserves old behaviour).
 * 3 HTTP-layer tests still pass.
-* Live test on Windows pending.
+* **Live test on Windows: confirmed in the v38/v39 session** —
+  `python player.py 16093_3` (Wave of Mutilation) renders the engraved
+  sheet music under the dark control panel with audio playback running
+  alongside, no errors at SVG-compile or runtime.
 
 ### Files changed in v37
 
@@ -280,6 +283,132 @@ unchanged.
   legible.
 * Compilation cost is paid at every player startup (~1–3 s on a
   modern machine). `--no-svg` opts out for fast launches.
+
+---
+
+## v38 attempt — single-host migration (partial fix, retracted in v39)
+
+This update was applied locally but never pushed to git. It hardcoded a
+single new CloudFront host — `d3d3l6a6rcgkaf.cloudfront.net` — replacing
+the v34 host `dqsljvtekg760.cloudfront.net`. The hypothesis was that
+Songsterr had performed a global migration. That hypothesis was wrong.
+
+### How v38's smoke test caught its own bug
+
+`test_cdn_smoke.py` (introduced in v38, retained in v39) HEAD-probes
+three reference songs after resolving them. Output of the first run:
+
+```
+--- Wave of Mutilation ---
+  BAD (403) — https://d3d3l6a6rcgkaf.cloudfront.net/.../3.json
+--- Square Hammer ---
+  OK (200)
+--- Eye of the Tiger ---
+  BAD (403) — https://d3d3l6a6rcgkaf.cloudfront.net/.../8.json
+FAIL: 2/3 song(s) broken
+```
+
+This is exactly the value the smoke test was designed to provide: it
+caught the regression before the patch was committed. The v38 design
+itself was the bug, not the smoke test.
+
+### What v38 got wrong
+
+Two architectural flaws revealed by `diagnose8.py`:
+
+1. **Songsterr's CDN migration is gradual, not global.** Some songs
+   live on the new host, others on the old; both serve concurrently.
+   Wave of Mutilation, Eye of the Tiger → old host. Square Hammer →
+   new host.
+2. **There is no field anywhere that signals which host serves a given
+   song.** Not in `/api/meta`, not in `state.meta.current`, not in
+   dns-prefetch. The SPA's JS bundle hardcodes the host list and probes
+   them at runtime. We must mirror that approach.
+
+### What we learned about the data shape (still useful)
+
+`diagnose8.py` also confirmed two pieces of v34/v35 lore:
+
+* The `/api/meta/{songId}.tracks` and
+  `state.meta.current.tracks` lists are byte-equivalent for a given
+  song; the only difference is that the page-state form synthesises
+  `partId = array_index` while the API form omits the field.
+  `_track_part_id(track, index)`'s index fallback (v35) is correct.
+* Eye of the Tiger now has 10 tracks, not 9 — Songsterr added a
+  Tambourine track at index 9, also `instrumentId=1024`. The resolver's
+  "first instrumentId==1024" heuristic still picks the kit at index 8,
+  which is what we want for a "drum tab." A user who specifically wants
+  the tambourine can pass `s89089t9` in the URL.
+
+---
+
+## v39 — CDN host migration hotfix (completed, supersedes v38)
+
+### Fix
+
+Replace the single `DEFAULT_CLOUDFRONT_HOST` constant with a
+`KNOWN_CDN_HOSTS` tuple, ordered newest-first. Add `_validate_cdn_url`
+(HEAD probe → bool) and `_try_hosts_for(song_id, rev, image, partId)`
+helpers. Refactor `_build_cdn_url_from_meta` to remove its `host`
+parameter and instead probe each host in `KNOWN_CDN_HOSTS` until one
+returns 200, returning the URL on that host.
+
+`DEFAULT_CLOUDFRONT_HOST` is retained as an alias pointing at
+`KNOWN_CDN_HOSTS[0]` for backwards compatibility with any external code
+that imports it.
+
+When Songsterr migrates again — adds a third host, drops the old one,
+or anything else — the maintenance steps are:
+
+1. `python test_cdn_smoke.py` to confirm the problem.
+2. Open a song page in DevTools → Network → filter cloudfront → reload;
+   note the host of any `<songId>/.../<partId>.json` request.
+3. Prepend that host to `KNOWN_CDN_HOSTS` in `cdn_resolver.py`.
+4. Re-run the smoke test.
+
+When the older host eventually goes dark (returns 4xx for everything),
+remove it from the tuple. Until then, leaving it in costs nothing
+beyond a single failed HEAD per first-fetch on new-host songs.
+
+### Validation
+
+* 11 unit tests (test_v39_resolver.py): try-hosts ordering, fall-back on
+  404, both-hosts-fail returns None, network-unreachable returns None,
+  URL path layout, six end-to-end shape tests against synthesized
+  `meta` dicts representing Wave of Mutilation / Square Hammer /
+  Eye of the Tiger, including the Eye-of-Tiger kit-vs-tambourine
+  default-and-hint distinction.
+* `test_cdn_smoke.py` (live, 3 songs) — pending live confirmation on
+  Windows.
+
+### The v38 → v39 lesson
+
+The v38 smoke test caught the bug in its own patch, in 2 seconds, before
+the bug shipped. That's the value: not "tests prevent bugs" but "tests
+shorten the discovery loop." The v34 design treated the CDN host as
+implicitly constant; v38 treated it as a single mutable value;
+v39 treats it as a list to probe. Each step is a more honest model
+of what Songsterr actually does. Architecture that mirrors the true
+shape of the world doesn't need to be re-fixed every six months.
+
+The diagnostic chain (diagnose4 → diagnose6 → diagnose7 → diagnose8)
+also worked as the project's debugging rule prescribes: each probe
+narrowed the hypothesis space using read-only data, and the patch
+was written only after the hypothesis was nailed down. v33's
+"shipped speculatively" mistake was not repeated.
+
+### Files changed in v39
+
+* `cdn_resolver.py` — v38's host change retained; `_build_cdn_url_from_meta`
+  now probes `KNOWN_CDN_HOSTS` in order via the new `_validate_cdn_url`
+  and `_try_hosts_for` helpers. The `host` parameter is removed.
+* `test_v39_resolver.py` — new, 11 unit tests with mocked HTTP.
+* `test_cdn_smoke.py` — same as v38 (carried in this zip so v39 is
+  self-sufficient when applied directly from a v37 baseline).
+
+`ir.py`, `parser.py`, `cache.py`, `emitter.py`, `pipeline.py`,
+`main.py`, `player.py`, `player.html`, `player.js`,
+`lilypond_utils.py` are unchanged. **Cache flush not required.**
 
 ---
 

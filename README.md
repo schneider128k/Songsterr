@@ -91,6 +91,7 @@ Press Ctrl+C in the terminal to stop the server.
 ├── player.js        Tone.js scheduling, UI loop, SVG fetch+inline
 ├── apply_update.py  apply update_vN.zip with backups
 ├── flush_cache.py   wipe db/
+├── session_start.py emit a self-contained session-start prompt for Claude
 ├── requirements.txt
 ├── db/              cached IR JSON, gitignored
 └── scores/          generated .ly, .pdf, .svg, gitignored
@@ -116,10 +117,38 @@ Press Ctrl+C in the terminal to stop the server.
 python test_player_smoke.py      # 6 build_schedule tests
 python test_player_http.py       # 3 HTTP layer tests
 python test_v37_svg.py           # 7 SVG-specific tests
+python test_v39_resolver.py      # 11 resolver unit tests (mocked HTTP)
+python test_cdn_smoke.py         # 3 live-CDN smoke tests (network)
 ```
 
-All 16 tests should pass without LilyPond installed (LilyPond is mocked
-in the SVG tests).
+The first four require no network (LilyPond is mocked in the SVG tests;
+HTTP is mocked in `test_v39_resolver.py`). `test_cdn_smoke.py` is a live
+smoke test — it resolves three known songs and verifies the CDN URLs
+serve HTTP 200, catching the case where Songsterr migrates a song to a
+CloudFront host we don't yet know about (as they did in mid-2026; see
+LOGBOOK v38/v39).
+
+## Maintenance — when a fresh fetch returns 403
+
+`cdn_resolver.py` keeps the list of CloudFront hosts Songsterr serves
+from in a `KNOWN_CDN_HOSTS` tuple at the top of the module. The
+resolver probes them in order and returns the first that 200s. Songs
+are split across multiple hosts simultaneously; Songsterr does not
+expose which host serves a given song in any API response.
+
+When a brand-new song fails with 403 across all known hosts:
+
+1. Open the failing song's page in the browser, F12 → Network tab,
+   filter by `cloudfront`, reload. Note the host of any
+   `/<songId>/.../<partId>.json` request that returns 200.
+2. Prepend that host to `KNOWN_CDN_HOSTS` in `cdn_resolver.py`.
+   (Order is newest-first; old hosts stay until they go dark.)
+3. Run `python test_cdn_smoke.py` to confirm. All three reference
+   songs should report `OK (200)`.
+
+The page's `<link rel="dns-prefetch">` is *not* a reliable host
+discovery source — it lagged the actual host by months during the
+mid-2026 migration. See LOGBOOK v39 for the worked example.
 
 ## Roadmap
 
